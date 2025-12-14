@@ -1,17 +1,22 @@
 """
 CoreBank - Comprehensive Bank Management System
-Version: 3.0 (Single File Edition)
+Version: 4.0 (Ultimate Single File Edition)
 Author: Raghav Agarwal
-Date: December 13, 2025
+Date: December 14, 2025
 
 This is a complete Banking Management System implemented in a single Python file.
 It includes:
 1. Configuration & Constants
 2. Input Validators
 3. Security Utilities (Hashing/Masking)
-4. Financial Calculators (EMI, Interest)
+4. Financial Calculators (EMI, Interest, Amortization)
 5. Data Persistence (Single CSV Database)
 6. Core Banking Logic (Customers, Accounts, Transactions, Loans)
+7. Fund Transfer System (Internal & External)
+8. Card Management System (Debit/Credit Cards)
+9. Cheque Processing System
+10. Comprehensive Audit Trail
+11. Advanced Reports & Visual Analytics
 """
 
 import os
@@ -19,7 +24,10 @@ import sys
 import json
 import hashlib
 import re
+import random
+import string
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
@@ -55,7 +63,15 @@ MIN_CURRENT = 5000
 
 # Transaction Limits
 DAILY_WITHDRAWAL_LIMIT = 50000
+DAILY_TRANSFER_LIMIT = 200000
 LARGE_TRANSACTION_THRESHOLD = 100000
+
+# Card Configuration
+CARD_VALIDITY_YEARS = 5
+CREDIT_CARD_LIMIT_DEFAULT = 50000
+
+# Cheque Configuration
+CHEQUE_CLEARANCE_DAYS = 3
 
 # EMI Calculation
 EMI_PRECISION = 2
@@ -186,6 +202,79 @@ def calculate_simple_interest(principal, annual_rate, days):
     time_in_years = days / 365
     interest = (principal * annual_rate * time_in_years) / 100
     return round(interest, 2)
+
+def calculate_amortization_schedule(principal, annual_rate, tenure_months):
+    """Generate complete amortization schedule"""
+    schedule = []
+    monthly_rate = annual_rate / (12 * 100)
+    emi = calculate_emi(principal, annual_rate, tenure_months)
+    outstanding = principal
+    
+    for month in range(1, tenure_months + 1):
+        interest_part = outstanding * monthly_rate
+        principal_part = emi - interest_part
+        outstanding -= principal_part
+        
+        schedule.append({
+            'Month': month,
+            'EMI': round(emi, 2),
+            'Principal': round(principal_part, 2),
+            'Interest': round(interest_part, 2),
+            'Outstanding': round(max(0, outstanding), 2)
+        })
+    
+    return schedule
+
+def generate_card_number():
+    """Generate a 16-digit card number"""
+    return ''.join([str(random.randint(0, 9)) for _ in range(16)])
+
+def generate_cvv():
+    """Generate a 3-digit CVV"""
+    return ''.join([str(random.randint(0, 9)) for _ in range(3)])
+
+def generate_cheque_number():
+    """Generate a 6-digit cheque number"""
+    return ''.join([str(random.randint(0, 9)) for _ in range(6)])
+
+def mask_card_number(card_num):
+    """Mask card number - show only last 4 digits"""
+    if len(card_num) >= 4:
+        return "XXXX-XXXX-XXXX-" + card_num[-4:]
+    return card_num
+
+def get_credit_score(account_age_days, total_transactions, total_balance, defaulted_loans=0):
+    """Calculate credit score based on banking activity"""
+    base_score = 600
+    
+    # Account age bonus (max 100 points)
+    age_score = min(100, account_age_days // 30 * 5)
+    
+    # Transaction frequency bonus (max 100 points)
+    txn_score = min(100, total_transactions * 2)
+    
+    # Balance bonus (max 100 points)
+    balance_score = min(100, int(total_balance / 10000) * 10)
+    
+    # Penalty for defaults
+    default_penalty = defaulted_loans * 100
+    
+    final_score = base_score + age_score + txn_score + balance_score - default_penalty
+    return max(300, min(900, final_score))
+
+def log_audit(data, action, details, status='Success'):
+    """Log an action to audit trail"""
+    log_entry = {
+        'LogID': f"LOG{len(data['audit'])+1:06d}",
+        'UserID': 'SYSTEM',
+        'Action': action,
+        'Details': details,
+        'Timestamp': get_timestamp(),
+        'IPAddress': '127.0.0.1',
+        'Status': status
+    }
+    data['audit'] = pd.concat([data['audit'], pd.DataFrame([log_entry])], ignore_index=True)
+    return data
 
 # ==========================================
 # SECTION 3: DATA MANAGEMENT
@@ -511,11 +600,647 @@ def apply_loan(data):
     }
     
     data['loans'] = pd.concat([data['loans'], pd.DataFrame([new_loan])], ignore_index=True)
+    data = log_audit(data, 'LOAN_APPLIED', f'Loan {loan_id} for ₹{amount}')
     print(f"{Colors.GREEN}✓ Loan {loan_id} approved! EMI: ₹{emi:.2f}{Colors.END}")
     return data
 
+def pay_loan_emi(data):
+    """Pay EMI for an active loan"""
+    print(f"\n{Colors.CYAN}--- Pay Loan EMI ---{Colors.END}")
+    
+    # Show active loans
+    active_loans = data['loans'][data['loans']['Status'] == 'Active']
+    if active_loans.empty:
+        print("No active loans found.")
+        return data
+    
+    print("\nActive Loans:")
+    print(active_loans[['LoanID', 'LoanType', 'EMI', 'OutstandingAmount']].to_string(index=False))
+    
+    loan_id = input("\nEnter Loan ID: ").strip()
+    loan = data['loans'][data['loans']['LoanID'] == loan_id]
+    
+    if loan.empty or loan.iloc[0]['Status'] != 'Active':
+        print(f"{Colors.RED}Loan not found or not active{Colors.END}")
+        return data
+    
+    loan_row = loan.iloc[0]
+    emi = loan_row['EMI']
+    outstanding = loan_row['OutstandingAmount']
+    
+    print(f"\nEMI Amount: ₹{emi:.2f}")
+    print(f"Outstanding: ₹{outstanding:.2f}")
+    
+    # Calculate interest and principal portions
+    monthly_rate = loan_row['InterestRate'] / (12 * 100)
+    interest_part = outstanding * monthly_rate
+    principal_part = min(emi - interest_part, outstanding)
+    
+    new_outstanding = outstanding - principal_part
+    
+    # Record payment
+    payment = {
+        'PaymentID': f"PAY{len(data['loan_payments'])+1:05d}",
+        'LoanID': loan_id,
+        'PaymentDate': get_date(),
+        'AmountPaid': emi,
+        'PrincipalPart': round(principal_part, 2),
+        'InterestPart': round(interest_part, 2),
+        'OutstandingAfter': round(new_outstanding, 2),
+        'PaymentMethod': 'Cash',
+        'Status': 'Success'
+    }
+    data['loan_payments'] = pd.concat([data['loan_payments'], pd.DataFrame([payment])], ignore_index=True)
+    
+    # Update loan outstanding
+    idx = loan.index[0]
+    data['loans'].at[idx, 'OutstandingAmount'] = round(new_outstanding, 2)
+    
+    # Close loan if fully paid
+    if new_outstanding <= 0:
+        data['loans'].at[idx, 'Status'] = 'Closed'
+        print(f"{Colors.GREEN}✓ Loan fully paid and closed!{Colors.END}")
+    else:
+        print(f"{Colors.GREEN}✓ EMI paid! Outstanding: ₹{new_outstanding:.2f}{Colors.END}")
+    
+    data = log_audit(data, 'EMI_PAID', f'EMI ₹{emi} for {loan_id}')
+    return data
+
+def view_loan_details(data):
+    """View detailed loan information with amortization"""
+    print(f"\n{Colors.CYAN}--- Loan Details ---{Colors.END}")
+    loan_id = input("Enter Loan ID: ").strip()
+    
+    loan = data['loans'][data['loans']['LoanID'] == loan_id]
+    if loan.empty:
+        print("Loan not found.")
+        return
+    
+    row = loan.iloc[0]
+    print(f"\n{'='*50}")
+    print(f"Loan ID:        {row['LoanID']}")
+    print(f"Type:           {row['LoanType']}")
+    print(f"Principal:      ₹{row['PrincipalAmount']:,.2f}")
+    print(f"Interest Rate:  {row['InterestRate']}% p.a.")
+    print(f"Tenure:         {row['Tenure_Months']} months")
+    print(f"EMI:            ₹{row['EMI']:,.2f}")
+    print(f"Outstanding:    ₹{row['OutstandingAmount']:,.2f}")
+    print(f"Status:         {row['Status']}")
+    print(f"{'='*50}")
+    
+    # Show payment history
+    payments = data['loan_payments'][data['loan_payments']['LoanID'] == loan_id]
+    if not payments.empty:
+        print(f"\n{Colors.YELLOW}Payment History:{Colors.END}")
+        print(payments[['PaymentDate', 'AmountPaid', 'PrincipalPart', 'InterestPart']].to_string(index=False))
+
 # ==========================================
-# SECTION 5: REPORTS & ANALYTICS
+# SECTION 5: FUND TRANSFER SYSTEM
+# ==========================================
+
+def transfer_funds(data):
+    """Transfer funds between accounts"""
+    print(f"\n{Colors.CYAN}--- Fund Transfer ---{Colors.END}")
+    print("1. Transfer to own account")
+    print("2. Transfer to other customer")
+    
+    choice = input("Select: ").strip()
+    
+    from_acc = input("From Account Number: ").strip()
+    from_account = data['accounts'][data['accounts']['AccountNumber'] == from_acc]
+    
+    if from_account.empty:
+        print(f"{Colors.RED}Source account not found{Colors.END}")
+        return data
+    
+    to_acc = input("To Account Number: ").strip()
+    to_account = data['accounts'][data['accounts']['AccountNumber'] == to_acc]
+    
+    if to_account.empty:
+        print(f"{Colors.RED}Destination account not found{Colors.END}")
+        return data
+    
+    if from_acc == to_acc:
+        print(f"{Colors.RED}Cannot transfer to same account{Colors.END}")
+        return data
+    
+    amount = float(input("Amount: ₹").strip())
+    
+    from_idx = from_account.index[0]
+    from_bal = data['accounts'].at[from_idx, 'Balance']
+    min_bal = data['accounts'].at[from_idx, 'MinBalance']
+    
+    if from_bal - amount < min_bal:
+        print(f"{Colors.RED}Insufficient balance. Min balance: ₹{min_bal}{Colors.END}")
+        return data
+    
+    if amount > DAILY_TRANSFER_LIMIT:
+        print(f"{Colors.RED}Exceeds daily transfer limit of ₹{DAILY_TRANSFER_LIMIT:,}{Colors.END}")
+        return data
+    
+    # Process transfer
+    to_idx = to_account.index[0]
+    
+    new_from_bal = from_bal - amount
+    new_to_bal = data['accounts'].at[to_idx, 'Balance'] + amount
+    
+    data['accounts'].at[from_idx, 'Balance'] = new_from_bal
+    data['accounts'].at[to_idx, 'Balance'] = new_to_bal
+    
+    # Generate transfer reference
+    transfer_ref = f"TRF{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    
+    # Record transfer
+    transfer_type = 'Internal' if choice == '1' else 'Inter-Customer'
+    transfer_record = {
+        'TransferID': f"XFER{len(data['transfers'])+1:05d}",
+        'FromAccount': from_acc,
+        'ToAccount': to_acc,
+        'Amount': amount,
+        'TransferType': transfer_type,
+        'Charges': 0,
+        'Date': get_date(),
+        'Status': 'Success',
+        'Reference': transfer_ref
+    }
+    data['transfers'] = pd.concat([data['transfers'], pd.DataFrame([transfer_record])], ignore_index=True)
+    
+    # Create debit transaction for sender
+    txn_debit = {
+        'TransactionID': f"TXN{len(data['transactions'])+1:05d}",
+        'AccountNumber': from_acc,
+        'TransactionType': 'Fund Transfer',
+        'Amount': amount,
+        'DebitCredit': 'Debit',
+        'Balance_After': new_from_bal,
+        'Date': get_date(),
+        'Time': datetime.now().strftime("%H:%M:%S"),
+        'Remarks': f'Transfer to {to_acc} Ref:{transfer_ref}',
+        'Status': 'Success'
+    }
+    data['transactions'] = pd.concat([data['transactions'], pd.DataFrame([txn_debit])], ignore_index=True)
+    
+    # Create credit transaction for receiver
+    txn_credit = {
+        'TransactionID': f"TXN{len(data['transactions'])+1:05d}",
+        'AccountNumber': to_acc,
+        'TransactionType': 'Fund Transfer',
+        'Amount': amount,
+        'DebitCredit': 'Credit',
+        'Balance_After': new_to_bal,
+        'Date': get_date(),
+        'Time': datetime.now().strftime("%H:%M:%S"),
+        'Remarks': f'Transfer from {from_acc} Ref:{transfer_ref}',
+        'Status': 'Success'
+    }
+    data['transactions'] = pd.concat([data['transactions'], pd.DataFrame([txn_credit])], ignore_index=True)
+    
+    print(f"{Colors.GREEN}✓ Transfer Successful!{Colors.END}")
+    print(f"Reference: {transfer_ref}")
+    print(f"Amount: ₹{amount:,.2f}")
+    print(f"From {from_acc}: ₹{new_from_bal:,.2f}")
+    print(f"To {to_acc}: ₹{new_to_bal:,.2f}")
+    
+    data = log_audit(data, 'FUND_TRANSFER', f'₹{amount} from {from_acc} to {to_acc}')
+    return data
+
+# ==========================================
+# SECTION 6: CARD MANAGEMENT SYSTEM
+# ==========================================
+
+def card_management_menu(data):
+    """Card Management Sub-Menu"""
+    while True:
+        print(f"\n{Colors.BOLD}{Colors.BLUE}=== CARD MANAGEMENT ==={Colors.END}")
+        print("1. Issue New Card")
+        print("2. View My Cards")
+        print("3. Block/Unblock Card")
+        print("4. View Card Transactions")
+        print("5. Change Card PIN")
+        print("6. Back to Main Menu")
+        
+        choice = input("\nSelect: ").strip()
+        
+        if choice == '1': data = issue_new_card(data)
+        elif choice == '2': view_cards(data)
+        elif choice == '3': data = toggle_card_status(data)
+        elif choice == '4': view_card_transactions(data)
+        elif choice == '5': data = change_card_pin(data)
+        elif choice == '6': break
+        else: print("Invalid option.")
+    
+    return data
+
+def issue_new_card(data):
+    """Issue a new debit/credit card"""
+    print(f"\n{Colors.CYAN}--- Issue New Card ---{Colors.END}")
+    
+    cust_id = input("Customer ID: ").strip()
+    if data['customers'][data['customers']['CustomerID'] == cust_id].empty:
+        print(f"{Colors.RED}Customer not found{Colors.END}")
+        return data
+    
+    # Show customer's accounts
+    accounts = data['accounts'][data['accounts']['CustomerID'] == cust_id]
+    if accounts.empty:
+        print(f"{Colors.RED}No accounts found for this customer{Colors.END}")
+        return data
+    
+    print("\nCustomer Accounts:")
+    print(accounts[['AccountNumber', 'AccountType', 'Balance']].to_string(index=False))
+    
+    acc_num = input("\nLink to Account Number: ").strip()
+    if data['accounts'][(data['accounts']['AccountNumber'] == acc_num) & 
+                        (data['accounts']['CustomerID'] == cust_id)].empty:
+        print(f"{Colors.RED}Account not found or doesn't belong to customer{Colors.END}")
+        return data
+    
+    print("\nCard Type:")
+    print("1. Debit Card")
+    print("2. Credit Card")
+    card_choice = input("Select: ").strip()
+    
+    card_type = 'Debit' if card_choice == '1' else 'Credit'
+    credit_limit = 0
+    
+    if card_type == 'Credit':
+        credit_limit = float(input(f"Credit Limit (default ₹{CREDIT_CARD_LIMIT_DEFAULT}): ").strip() or CREDIT_CARD_LIMIT_DEFAULT)
+    
+    # Generate card details
+    card_number = generate_card_number()
+    cvv = generate_cvv()
+    pin = input("Set 4-digit PIN: ").strip()
+    
+    if len(pin) != 4 or not pin.isdigit():
+        print(f"{Colors.RED}Invalid PIN format{Colors.END}")
+        return data
+    
+    issue_date = get_date()
+    expiry_date = (datetime.now() + timedelta(days=CARD_VALIDITY_YEARS*365)).strftime("%Y-%m-%d")
+    
+    new_card = {
+        'CardNumber': card_number,
+        'CustomerID': cust_id,
+        'LinkedAccount': acc_num,
+        'CardType': card_type,
+        'CreditLimit': credit_limit,
+        'IssueDate': issue_date,
+        'ExpiryDate': expiry_date,
+        'CVV': cvv,
+        'PIN_Hash': hash_password(pin),
+        'Status': 'Active'
+    }
+    
+    data['cards'] = pd.concat([data['cards'], pd.DataFrame([new_card])], ignore_index=True)
+    
+    print(f"\n{Colors.GREEN}✓ Card Issued Successfully!{Colors.END}")
+    print(f"{'='*40}")
+    print(f"Card Number: {mask_card_number(card_number)}")
+    print(f"Card Type:   {card_type}")
+    print(f"Linked A/C:  {acc_num}")
+    print(f"Valid Till:  {expiry_date}")
+    print(f"CVV:         {cvv} (Keep Secret!)")
+    print(f"{'='*40}")
+    print(f"{Colors.YELLOW}Note: Full card number will be printed on physical card.{Colors.END}")
+    
+    data = log_audit(data, 'CARD_ISSUED', f'{card_type} card for {cust_id}')
+    return data
+
+def view_cards(data):
+    """View cards for a customer"""
+    print(f"\n{Colors.CYAN}--- View Cards ---{Colors.END}")
+    cust_id = input("Customer ID: ").strip()
+    
+    cards = data['cards'][data['cards']['CustomerID'] == cust_id]
+    if cards.empty:
+        print("No cards found.")
+        return
+    
+    print(f"\n{'='*70}")
+    for _, card in cards.iterrows():
+        print(f"Card:    {mask_card_number(card['CardNumber'])}")
+        print(f"Type:    {card['CardType']}")
+        print(f"Account: {card['LinkedAccount']}")
+        print(f"Expiry:  {card['ExpiryDate']}")
+        print(f"Status:  {card['Status']}")
+        if card['CardType'] == 'Credit':
+            print(f"Limit:   ₹{card['CreditLimit']:,.2f}")
+        print(f"{'-'*70}")
+
+def toggle_card_status(data):
+    """Block or unblock a card"""
+    print(f"\n{Colors.CYAN}--- Block/Unblock Card ---{Colors.END}")
+    
+    card_num = input("Enter last 4 digits of card: ").strip()
+    cards = data['cards'][data['cards']['CardNumber'].str.endswith(card_num)]
+    
+    if cards.empty:
+        print("Card not found.")
+        return data
+    
+    card = cards.iloc[0]
+    idx = cards.index[0]
+    current_status = card['Status']
+    
+    print(f"Current Status: {current_status}")
+    
+    if current_status == 'Active':
+        confirm = input("Block this card? (yes/no): ").strip().lower()
+        if confirm == 'yes':
+            data['cards'].at[idx, 'Status'] = 'Blocked'
+            print(f"{Colors.GREEN}✓ Card blocked successfully{Colors.END}")
+            data = log_audit(data, 'CARD_BLOCKED', f'Card ending {card_num}')
+    else:
+        confirm = input("Unblock this card? (yes/no): ").strip().lower()
+        if confirm == 'yes':
+            data['cards'].at[idx, 'Status'] = 'Active'
+            print(f"{Colors.GREEN}✓ Card unblocked successfully{Colors.END}")
+            data = log_audit(data, 'CARD_UNBLOCKED', f'Card ending {card_num}')
+    
+    return data
+
+def view_card_transactions(data):
+    """View transactions made by a card's linked account"""
+    print(f"\n{Colors.CYAN}--- Card Transactions ---{Colors.END}")
+    
+    card_num = input("Enter last 4 digits of card: ").strip()
+    cards = data['cards'][data['cards']['CardNumber'].str.endswith(card_num)]
+    
+    if cards.empty:
+        print("Card not found.")
+        return
+    
+    linked_acc = cards.iloc[0]['LinkedAccount']
+    txns = data['transactions'][data['transactions']['AccountNumber'] == linked_acc].tail(10)
+    
+    if txns.empty:
+        print("No transactions found.")
+        return
+    
+    print(f"\nLast 10 transactions for card ending {card_num}:")
+    print(txns[['Date', 'TransactionType', 'Amount', 'DebitCredit', 'Balance_After']].to_string(index=False))
+
+def change_card_pin(data):
+    """Change card PIN"""
+    print(f"\n{Colors.CYAN}--- Change Card PIN ---{Colors.END}")
+    
+    card_num = input("Enter last 4 digits of card: ").strip()
+    cards = data['cards'][data['cards']['CardNumber'].str.endswith(card_num)]
+    
+    if cards.empty:
+        print("Card not found.")
+        return data
+    
+    idx = cards.index[0]
+    old_pin = input("Current PIN: ").strip()
+    
+    if not verify_password(old_pin, cards.iloc[0]['PIN_Hash']):
+        print(f"{Colors.RED}Incorrect PIN{Colors.END}")
+        return data
+    
+    new_pin = input("New 4-digit PIN: ").strip()
+    confirm_pin = input("Confirm new PIN: ").strip()
+    
+    if new_pin != confirm_pin:
+        print(f"{Colors.RED}PINs don't match{Colors.END}")
+        return data
+    
+    if len(new_pin) != 4 or not new_pin.isdigit():
+        print(f"{Colors.RED}Invalid PIN format{Colors.END}")
+        return data
+    
+    data['cards'].at[idx, 'PIN_Hash'] = hash_password(new_pin)
+    print(f"{Colors.GREEN}✓ PIN changed successfully{Colors.END}")
+    
+    data = log_audit(data, 'PIN_CHANGED', f'Card ending {card_num}')
+    return data
+
+# ==========================================
+# SECTION 7: CHEQUE PROCESSING SYSTEM
+# ==========================================
+
+def cheque_management_menu(data):
+    """Cheque Processing Sub-Menu"""
+    while True:
+        print(f"\n{Colors.BOLD}{Colors.BLUE}=== CHEQUE PROCESSING ==={Colors.END}")
+        print("1. Issue New Cheque")
+        print("2. Deposit Cheque")
+        print("3. View Cheque Status")
+        print("4. Cancel Cheque")
+        print("5. View All Cheques")
+        print("6. Back to Main Menu")
+        
+        choice = input("\nSelect: ").strip()
+        
+        if choice == '1': data = issue_cheque(data)
+        elif choice == '2': data = deposit_cheque(data)
+        elif choice == '3': check_cheque_status(data)
+        elif choice == '4': data = cancel_cheque(data)
+        elif choice == '5': view_all_cheques(data)
+        elif choice == '6': break
+        else: print("Invalid option.")
+    
+    return data
+
+def issue_cheque(data):
+    """Issue a new cheque"""
+    print(f"\n{Colors.CYAN}--- Issue Cheque ---{Colors.END}")
+    
+    acc_num = input("From Account Number: ").strip()
+    account = data['accounts'][data['accounts']['AccountNumber'] == acc_num]
+    
+    if account.empty:
+        print(f"{Colors.RED}Account not found{Colors.END}")
+        return data
+    
+    issued_to = input("Payee Name: ").strip()
+    amount = float(input("Amount: ₹").strip())
+    
+    balance = account.iloc[0]['Balance']
+    min_bal = account.iloc[0]['MinBalance']
+    
+    if balance - amount < min_bal:
+        print(f"{Colors.RED}Insufficient balance for cheque amount{Colors.END}")
+        return data
+    
+    cheque_num = generate_cheque_number()
+    
+    new_cheque = {
+        'ChequeNumber': cheque_num,
+        'AccountNumber': acc_num,
+        'IssuedTo': issued_to,
+        'Amount': amount,
+        'IssueDate': get_date(),
+        'ClearanceDate': None,
+        'Status': 'Issued',
+        'Remarks': ''
+    }
+    
+    data['cheques'] = pd.concat([data['cheques'], pd.DataFrame([new_cheque])], ignore_index=True)
+    
+    print(f"\n{Colors.GREEN}✓ Cheque Issued{Colors.END}")
+    print(f"Cheque Number: {cheque_num}")
+    print(f"Amount: ₹{amount:,.2f}")
+    print(f"Payee: {issued_to}")
+    
+    data = log_audit(data, 'CHEQUE_ISSUED', f'Cheque {cheque_num} for ₹{amount}')
+    return data
+
+def deposit_cheque(data):
+    """Deposit/Clear a cheque"""
+    print(f"\n{Colors.CYAN}--- Deposit Cheque ---{Colors.END}")
+    
+    cheque_num = input("Cheque Number: ").strip()
+    cheque = data['cheques'][data['cheques']['ChequeNumber'] == cheque_num]
+    
+    if cheque.empty:
+        print(f"{Colors.RED}Cheque not found{Colors.END}")
+        return data
+    
+    cheque_row = cheque.iloc[0]
+    
+    if cheque_row['Status'] != 'Issued':
+        print(f"{Colors.RED}Cheque cannot be deposited. Status: {cheque_row['Status']}{Colors.END}")
+        return data
+    
+    to_acc = input("Deposit to Account Number: ").strip()
+    to_account = data['accounts'][data['accounts']['AccountNumber'] == to_acc]
+    
+    if to_account.empty:
+        print(f"{Colors.RED}Destination account not found{Colors.END}")
+        return data
+    
+    # Check if source account has sufficient balance
+    from_acc = cheque_row['AccountNumber']
+    from_account = data['accounts'][data['accounts']['AccountNumber'] == from_acc]
+    from_idx = from_account.index[0]
+    from_bal = data['accounts'].at[from_idx, 'Balance']
+    min_bal = data['accounts'].at[from_idx, 'MinBalance']
+    amount = cheque_row['Amount']
+    
+    if from_bal - amount < min_bal:
+        # Bounce the cheque
+        idx = cheque.index[0]
+        data['cheques'].at[idx, 'Status'] = 'Bounced'
+        data['cheques'].at[idx, 'Remarks'] = 'Insufficient funds'
+        print(f"{Colors.RED}Cheque bounced! Insufficient funds in issuer account.{Colors.END}")
+        data = log_audit(data, 'CHEQUE_BOUNCED', f'Cheque {cheque_num} bounced')
+        return data
+    
+    # Process cheque clearance
+    # Debit from source
+    new_from_bal = from_bal - amount
+    data['accounts'].at[from_idx, 'Balance'] = new_from_bal
+    
+    # Credit to destination
+    to_idx = to_account.index[0]
+    new_to_bal = data['accounts'].at[to_idx, 'Balance'] + amount
+    data['accounts'].at[to_idx, 'Balance'] = new_to_bal
+    
+    # Update cheque status
+    idx = cheque.index[0]
+    data['cheques'].at[idx, 'Status'] = 'Cleared'
+    data['cheques'].at[idx, 'ClearanceDate'] = get_date()
+    
+    # Create transactions
+    txn_debit = {
+        'TransactionID': f"TXN{len(data['transactions'])+1:05d}",
+        'AccountNumber': from_acc,
+        'TransactionType': 'Cheque Debit',
+        'Amount': amount,
+        'DebitCredit': 'Debit',
+        'Balance_After': new_from_bal,
+        'Date': get_date(),
+        'Time': datetime.now().strftime("%H:%M:%S"),
+        'Remarks': f'Cheque {cheque_num} cleared',
+        'Status': 'Success'
+    }
+    data['transactions'] = pd.concat([data['transactions'], pd.DataFrame([txn_debit])], ignore_index=True)
+    
+    txn_credit = {
+        'TransactionID': f"TXN{len(data['transactions'])+1:05d}",
+        'AccountNumber': to_acc,
+        'TransactionType': 'Cheque Credit',
+        'Amount': amount,
+        'DebitCredit': 'Credit',
+        'Balance_After': new_to_bal,
+        'Date': get_date(),
+        'Time': datetime.now().strftime("%H:%M:%S"),
+        'Remarks': f'Cheque {cheque_num} deposited',
+        'Status': 'Success'
+    }
+    data['transactions'] = pd.concat([data['transactions'], pd.DataFrame([txn_credit])], ignore_index=True)
+    
+    print(f"\n{Colors.GREEN}✓ Cheque Cleared Successfully!{Colors.END}")
+    print(f"Amount: ₹{amount:,.2f}")
+    print(f"Deposited to: {to_acc}")
+    
+    data = log_audit(data, 'CHEQUE_CLEARED', f'Cheque {cheque_num} for ₹{amount}')
+    return data
+
+def check_cheque_status(data):
+    """Check status of a cheque"""
+    print(f"\n{Colors.CYAN}--- Cheque Status ---{Colors.END}")
+    
+    cheque_num = input("Cheque Number: ").strip()
+    cheque = data['cheques'][data['cheques']['ChequeNumber'] == cheque_num]
+    
+    if cheque.empty:
+        print("Cheque not found.")
+        return
+    
+    row = cheque.iloc[0]
+    print(f"\nCheque Number: {row['ChequeNumber']}")
+    print(f"From Account: {row['AccountNumber']}")
+    print(f"Payee:        {row['IssuedTo']}")
+    print(f"Amount:       ₹{row['Amount']:,.2f}")
+    print(f"Issue Date:   {row['IssueDate']}")
+    print(f"Status:       {row['Status']}")
+    if row['ClearanceDate']:
+        print(f"Cleared On:   {row['ClearanceDate']}")
+    if row['Remarks']:
+        print(f"Remarks:      {row['Remarks']}")
+
+def cancel_cheque(data):
+    """Cancel an issued cheque"""
+    print(f"\n{Colors.CYAN}--- Cancel Cheque ---{Colors.END}")
+    
+    cheque_num = input("Cheque Number: ").strip()
+    cheque = data['cheques'][data['cheques']['ChequeNumber'] == cheque_num]
+    
+    if cheque.empty:
+        print("Cheque not found.")
+        return data
+    
+    if cheque.iloc[0]['Status'] != 'Issued':
+        print(f"{Colors.RED}Only issued cheques can be cancelled{Colors.END}")
+        return data
+    
+    confirm = input("Cancel this cheque? (yes/no): ").strip().lower()
+    if confirm == 'yes':
+        idx = cheque.index[0]
+        data['cheques'].at[idx, 'Status'] = 'Cancelled'
+        data['cheques'].at[idx, 'Remarks'] = 'Cancelled by account holder'
+        print(f"{Colors.GREEN}✓ Cheque cancelled{Colors.END}")
+        data = log_audit(data, 'CHEQUE_CANCELLED', f'Cheque {cheque_num}')
+    
+    return data
+
+def view_all_cheques(data):
+    """View all cheques for an account"""
+    print(f"\n{Colors.CYAN}--- All Cheques ---{Colors.END}")
+    
+    acc_num = input("Account Number: ").strip()
+    cheques = data['cheques'][data['cheques']['AccountNumber'] == acc_num]
+    
+    if cheques.empty:
+        print("No cheques found.")
+        return
+    
+    print(cheques[['ChequeNumber', 'IssuedTo', 'Amount', 'Status', 'IssueDate']].to_string(index=False))
+
+# ==========================================
+# SECTION 8: REPORTS & ANALYTICS
 # ==========================================
 
 def report_transaction_history(data):
@@ -540,20 +1265,38 @@ def report_bank_summary(data):
     print(f"\n{Colors.CYAN}--- Bank Financial Summary ---{Colors.END}")
     
     total_deposits = data['accounts']['Balance'].sum()
-    total_loans = data['loans']['OutstandingAmount'].sum()
+    total_loans = data['loans']['OutstandingAmount'].sum() if not data['loans'].empty else 0
     total_customers = len(data['customers'])
+    total_accounts = len(data['accounts'])
+    total_cards = len(data['cards'])
     
     # Calculate total transaction volume
-    credit_txns = data['transactions'][data['transactions']['DebitCredit'] == 'Credit']['Amount'].sum()
-    debit_txns = data['transactions'][data['transactions']['DebitCredit'] == 'Debit']['Amount'].sum()
+    credit_txns = data['transactions'][data['transactions']['DebitCredit'] == 'Credit']['Amount'].sum() if not data['transactions'].empty else 0
+    debit_txns = data['transactions'][data['transactions']['DebitCredit'] == 'Debit']['Amount'].sum() if not data['transactions'].empty else 0
     
-    print(f"Total Deposits Held:    ₹{total_deposits:,.2f}")
-    print(f"Total Loans Outstanding: ₹{total_loans:,.2f}")
-    print(f"Net Liquidity:          ₹{(total_deposits - total_loans):,.2f}")
-    print("-" * 40)
-    print(f"Total Credit Volume:    ₹{credit_txns:,.2f}")
-    print(f"Total Debit Volume:     ₹{debit_txns:,.2f}")
-    print(f"Customer Base:          {total_customers}")
+    # Loan statistics
+    active_loans = len(data['loans'][data['loans']['Status'] == 'Active']) if not data['loans'].empty else 0
+    
+    print(f"\n{'='*50}")
+    print(f"{Colors.BOLD}FINANCIAL OVERVIEW{Colors.END}")
+    print(f"{'='*50}")
+    print(f"Total Deposits Held:     ₹{total_deposits:>15,.2f}")
+    print(f"Total Loans Outstanding: ₹{total_loans:>15,.2f}")
+    print(f"Net Liquidity:           ₹{(total_deposits - total_loans):>15,.2f}")
+    print(f"{'='*50}")
+    print(f"{Colors.BOLD}TRANSACTION VOLUME{Colors.END}")
+    print(f"{'='*50}")
+    print(f"Total Credit Volume:     ₹{credit_txns:>15,.2f}")
+    print(f"Total Debit Volume:      ₹{debit_txns:>15,.2f}")
+    print(f"Net Flow:                ₹{(credit_txns - debit_txns):>15,.2f}")
+    print(f"{'='*50}")
+    print(f"{Colors.BOLD}STATISTICS{Colors.END}")
+    print(f"{'='*50}")
+    print(f"Total Customers:         {total_customers:>15}")
+    print(f"Total Accounts:          {total_accounts:>15}")
+    print(f"Active Loans:            {active_loans:>15}")
+    print(f"Cards Issued:            {total_cards:>15}")
+    print(f"{'='*50}")
 
 def report_customer_balances(data):
     print(f"\n{Colors.CYAN}--- Customer Balances Report ---{Colors.END}")
@@ -562,16 +1305,111 @@ def report_customer_balances(data):
         print("No customers.")
         return
 
-    print(f"{'ID':<10} {'Name':<25} {'Total Balance':<15} {'Accounts':<5}")
-    print("-" * 60)
+    print(f"\n{'ID':<10} {'Name':<25} {'Total Balance':<15} {'Accounts':<8} {'Loans':<6}")
+    print("-" * 70)
     
     for _, cust in data['customers'].iterrows():
         cid = cust['CustomerID']
         accounts = data['accounts'][data['accounts']['CustomerID'] == cid]
+        loans = data['loans'][data['loans']['CustomerID'] == cid] if not data['loans'].empty else pd.DataFrame()
         total_bal = accounts['Balance'].sum()
-        count = len(accounts)
+        acc_count = len(accounts)
+        loan_count = len(loans)
         
-        print(f"{cid:<10} {cust['Name']:<25} ₹{total_bal:<14.2f} {count:<5}")
+        print(f"{cid:<10} {cust['Name']:<25} ₹{total_bal:<14,.2f} {acc_count:<8} {loan_count:<6}")
+
+def report_daily_transactions(data):
+    """Show today's transactions summary"""
+    print(f"\n{Colors.CYAN}--- Daily Transaction Summary ---{Colors.END}")
+    
+    today = get_date()
+    today_txns = data['transactions'][data['transactions']['Date'] == today]
+    
+    if today_txns.empty:
+        print("No transactions today.")
+        return
+    
+    credits = today_txns[today_txns['DebitCredit'] == 'Credit']
+    debits = today_txns[today_txns['DebitCredit'] == 'Debit']
+    
+    print(f"\nDate: {today}")
+    print(f"{'='*50}")
+    print(f"Total Transactions: {len(today_txns)}")
+    print(f"{'='*50}")
+    print(f"Credits: {len(credits)} transactions, ₹{credits['Amount'].sum():,.2f}")
+    print(f"Debits:  {len(debits)} transactions, ₹{debits['Amount'].sum():,.2f}")
+    print(f"{'='*50}")
+    print(f"\nTransaction Details:")
+    print(today_txns[['TransactionID', 'AccountNumber', 'TransactionType', 'Amount', 'DebitCredit']].to_string(index=False))
+
+def report_loan_portfolio(data):
+    """Detailed loan portfolio analysis"""
+    print(f"\n{Colors.CYAN}--- Loan Portfolio Analysis ---{Colors.END}")
+    
+    if data['loans'].empty:
+        print("No loans in system.")
+        return
+    
+    print(f"\n{'='*60}")
+    print(f"{Colors.BOLD}LOAN PORTFOLIO SUMMARY{Colors.END}")
+    print(f"{'='*60}")
+    
+    # By status
+    status_summary = data['loans'].groupby('Status').agg({
+        'LoanID': 'count',
+        'PrincipalAmount': 'sum',
+        'OutstandingAmount': 'sum'
+    }).rename(columns={'LoanID': 'Count'})
+    
+    print(f"\nBy Status:")
+    print(status_summary.to_string())
+    
+    # By type
+    print(f"\n\nBy Loan Type:")
+    type_summary = data['loans'].groupby('LoanType').agg({
+        'LoanID': 'count',
+        'PrincipalAmount': 'sum',
+        'OutstandingAmount': 'sum',
+        'InterestRate': 'mean'
+    }).rename(columns={'LoanID': 'Count', 'InterestRate': 'Avg Rate'})
+    print(type_summary.to_string())
+
+def view_audit_trail(data):
+    """View system audit trail"""
+    print(f"\n{Colors.CYAN}--- Audit Trail ---{Colors.END}")
+    
+    if data['audit'].empty:
+        print("No audit logs.")
+        return
+    
+    print("1. View all logs")
+    print("2. Filter by action type")
+    print("3. Filter by date")
+    
+    choice = input("\nSelect: ").strip()
+    
+    if choice == '1':
+        logs = data['audit'].tail(50)
+    elif choice == '2':
+        action = input("Enter action type (e.g., DEPOSIT, WITHDRAWAL, TRANSFER): ").strip().upper()
+        logs = data['audit'][data['audit']['Action'].str.contains(action, case=False, na=False)]
+    elif choice == '3':
+        date = input("Enter date (YYYY-MM-DD): ").strip()
+        logs = data['audit'][data['audit']['Timestamp'].str.startswith(date)]
+    else:
+        return
+    
+    if logs.empty:
+        print("No matching logs found.")
+        return
+    
+    print(f"\n{'-'*100}")
+    print(f"{'Timestamp':<20} {'Action':<20} {'Details':<50} {'Status':<10}")
+    print(f"{'-'*100}")
+    
+    for _, log in logs.iterrows():
+        details = str(log['Details'])[:48] if log['Details'] else ''
+        print(f"{str(log['Timestamp']):<20} {str(log['Action']):<20} {details:<50} {str(log['Status']):<10}")
 
 def visualize_account_distribution(data):
     print(f"\n{Colors.CYAN}--- Generating Account Distribution Chart ---{Colors.END}")
@@ -584,9 +1422,10 @@ def visualize_account_distribution(data):
         type_counts = data['accounts']['AccountType'].value_counts()
         
         plt.figure(figsize=(10, 6))
-        plt.pie(type_counts, labels=type_counts.index, autopct='%1.1f%%', startangle=140, colors=['#ff9999','#66b3ff','#99ff99','#ffcc99'])
-        plt.title('Distribution of Account Types')
-        plt.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+        colors = ['#ff9999','#66b3ff','#99ff99','#ffcc99', '#ff99cc']
+        plt.pie(type_counts, labels=type_counts.index, autopct='%1.1f%%', startangle=140, colors=colors[:len(type_counts)])
+        plt.title('Distribution of Account Types', fontsize=14, fontweight='bold')
+        plt.axis('equal')
         
         print("Displaying chart window...")
         plt.show()
@@ -600,14 +1439,47 @@ def visualize_loan_status(data):
         return
 
     try:
-        # Group by Loan Type and Status
         loan_summary = data['loans'].groupby('LoanType')['PrincipalAmount'].sum()
         
-        plt.figure(figsize=(10, 6))
-        loan_summary.plot(kind='bar', color='skyblue')
-        plt.title('Total Loan Amount by Type')
+        plt.figure(figsize=(12, 6))
+        bars = loan_summary.plot(kind='bar', color=['#3498db', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6'])
+        plt.title('Total Loan Amount by Type', fontsize=14, fontweight='bold')
         plt.xlabel('Loan Type')
         plt.ylabel('Total Principal Amount (₹)')
+        plt.xticks(rotation=45)
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        
+        # Add value labels on bars
+        for i, v in enumerate(loan_summary):
+            plt.text(i, v + v*0.01, f'₹{v:,.0f}', ha='center', va='bottom', fontsize=9)
+        
+        plt.tight_layout()
+        print("Displaying chart window...")
+        plt.show()
+    except Exception as e:
+        print(f"{Colors.RED}Error generating chart: {e}{Colors.END}")
+
+def visualize_monthly_transactions(data):
+    """Monthly transaction trend chart"""
+    print(f"\n{Colors.CYAN}--- Generating Monthly Transaction Trend ---{Colors.END}")
+    
+    if data['transactions'].empty:
+        print("No transaction data to visualize.")
+        return
+    
+    try:
+        # Convert date and group by month
+        txns = data['transactions'].copy()
+        txns['Month'] = pd.to_datetime(txns['Date']).dt.to_period('M').astype(str)
+        
+        monthly = txns.groupby(['Month', 'DebitCredit'])['Amount'].sum().unstack(fill_value=0)
+        
+        plt.figure(figsize=(12, 6))
+        monthly.plot(kind='bar', width=0.8)
+        plt.title('Monthly Transaction Volume', fontsize=14, fontweight='bold')
+        plt.xlabel('Month')
+        plt.ylabel('Amount (₹)')
+        plt.legend(['Credit', 'Debit'])
         plt.xticks(rotation=45)
         plt.grid(axis='y', linestyle='--', alpha=0.7)
         plt.tight_layout()
@@ -617,75 +1489,421 @@ def visualize_loan_status(data):
     except Exception as e:
         print(f"{Colors.RED}Error generating chart: {e}{Colors.END}")
 
+def visualize_customer_growth(data):
+    """Customer growth over time"""
+    print(f"\n{Colors.CYAN}--- Generating Customer Growth Chart ---{Colors.END}")
+    
+    if data['customers'].empty:
+        print("No customer data to visualize.")
+        return
+    
+    try:
+        customers = data['customers'].copy()
+        customers['Month'] = pd.to_datetime(customers['RegistrationDate']).dt.to_period('M').astype(str)
+        monthly_new = customers.groupby('Month').size().cumsum()
+        
+        plt.figure(figsize=(12, 6))
+        plt.plot(monthly_new.index, monthly_new.values, marker='o', linewidth=2, markersize=8, color='#2ecc71')
+        plt.fill_between(monthly_new.index, monthly_new.values, alpha=0.3, color='#2ecc71')
+        plt.title('Cumulative Customer Growth', fontsize=14, fontweight='bold')
+        plt.xlabel('Month')
+        plt.ylabel('Total Customers')
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        
+        print("Displaying chart window...")
+        plt.show()
+    except Exception as e:
+        print(f"{Colors.RED}Error generating chart: {e}{Colors.END}")
+
+def customer_credit_score(data):
+    """Calculate and display customer credit score"""
+    print(f"\n{Colors.CYAN}--- Customer Credit Score ---{Colors.END}")
+    
+    cust_id = input("Enter Customer ID: ").strip()
+    customer = data['customers'][data['customers']['CustomerID'] == cust_id]
+    
+    if customer.empty:
+        print("Customer not found.")
+        return
+    
+    # Calculate factors
+    reg_date = datetime.strptime(customer.iloc[0]['RegistrationDate'], '%Y-%m-%d')
+    account_age = (datetime.now() - reg_date).days
+    
+    accounts = data['accounts'][data['accounts']['CustomerID'] == cust_id]
+    total_balance = accounts['Balance'].sum() if not accounts.empty else 0
+    
+    acc_nums = accounts['AccountNumber'].tolist()
+    total_txns = len(data['transactions'][data['transactions']['AccountNumber'].isin(acc_nums)]) if not data['transactions'].empty else 0
+    
+    # Check for defaulted loans
+    defaults = 0
+    if not data['loans'].empty:
+        cust_loans = data['loans'][data['loans']['CustomerID'] == cust_id]
+        defaults = len(cust_loans[cust_loans['Status'] == 'Defaulted'])
+    
+    score = get_credit_score(account_age, total_txns, total_balance, defaults)
+    
+    # Determine rating
+    if score >= 750:
+        rating = "Excellent"
+        color = Colors.GREEN
+    elif score >= 650:
+        rating = "Good"
+        color = Colors.BLUE
+    elif score >= 550:
+        rating = "Fair"
+        color = Colors.YELLOW
+    else:
+        rating = "Poor"
+        color = Colors.RED
+    
+    print(f"\n{'='*50}")
+    print(f"Customer: {customer.iloc[0]['Name']}")
+    print(f"{'='*50}")
+    print(f"Credit Score: {color}{score}{Colors.END}")
+    print(f"Rating:       {color}{rating}{Colors.END}")
+    print(f"{'='*50}")
+    print(f"\nScore Factors:")
+    print(f"  Account Age:       {account_age} days")
+    print(f"  Total Transactions: {total_txns}")
+    print(f"  Total Balance:     ₹{total_balance:,.2f}")
+    print(f"  Loan Defaults:     {defaults}")
+
 def generate_reports(data):
     while True:
         print(f"\n{Colors.BOLD}{Colors.BLUE}=== REPORTS & ANALYTICS ==={Colors.END}")
-        print("1. Transaction History")
-        print("2. Bank Financial Summary")
-        print("3. Customer Balances Report")
-        print("4. Visualize Account Distribution (Pie Chart)")
-        print("5. Visualize Loan Portfolio (Bar Chart)")
-        print("6. Back to Main Menu")
+        print(f"\n{Colors.YELLOW}Text Reports:{Colors.END}")
+        print("1.  Transaction History")
+        print("2.  Bank Financial Summary")
+        print("3.  Customer Balances Report")
+        print("4.  Daily Transactions Summary")
+        print("5.  Loan Portfolio Analysis")
+        print("6.  View Audit Trail")
+        print("7.  Customer Credit Score")
+        print(f"\n{Colors.YELLOW}Visual Charts (Matplotlib):{Colors.END}")
+        print("8.  Account Distribution (Pie Chart)")
+        print("9.  Loan Portfolio (Bar Chart)")
+        print("10. Monthly Transaction Trend")
+        print("11. Customer Growth Chart")
+        print(f"\n12. Back to Main Menu")
         
         choice = input("\nSelect Report: ").strip()
         
         if choice == '1': report_transaction_history(data)
         elif choice == '2': report_bank_summary(data)
         elif choice == '3': report_customer_balances(data)
-        elif choice == '4': visualize_account_distribution(data)
-        elif choice == '5': visualize_loan_status(data)
-        elif choice == '6': break
+        elif choice == '4': report_daily_transactions(data)
+        elif choice == '5': report_loan_portfolio(data)
+        elif choice == '6': view_audit_trail(data)
+        elif choice == '7': customer_credit_score(data)
+        elif choice == '8': visualize_account_distribution(data)
+        elif choice == '9': visualize_loan_status(data)
+        elif choice == '10': visualize_monthly_transactions(data)
+        elif choice == '11': visualize_customer_growth(data)
+        elif choice == '12': break
         else: print("Invalid option.")
 
 # ==========================================
-# SECTION 6: MENUS & MAIN LOOP
+# SECTION 9: MENUS & MAIN LOOP
 # ==========================================
 
 def dashboard(data):
-    print(f"\n{Colors.BOLD}{Colors.BLUE}=== COREBANK DASHBOARD ==={Colors.END}")
-    print(f"Customers: {len(data['customers'])}")
-    print(f"Accounts:  {len(data['accounts'])}")
-    print(f"Balance:   ₹{data['accounts']['Balance'].sum():,.2f}")
-    print(f"Loans:     {len(data['loans'])}")
-    print(f"Time:      {datetime.now().strftime('%H:%M:%S')}")
-    print("="*30)
+    print(f"\n{Colors.BOLD}{Colors.BLUE}╔══════════════════════════════════════════╗")
+    print(f"║       COREBANK MANAGEMENT SYSTEM         ║")
+    print(f"╚══════════════════════════════════════════╝{Colors.END}")
+    print(f"\n{Colors.CYAN}Quick Stats:{Colors.END}")
+    print(f"  Customers: {len(data['customers']):<8} Accounts: {len(data['accounts']):<8} Cards: {len(data['cards'])}")
+    total_balance = data['accounts']['Balance'].sum() if not data['accounts'].empty else 0
+    total_loans = data['loans']['OutstandingAmount'].sum() if not data['loans'].empty else 0
+    print(f"  Balance:   ₹{total_balance:,.2f}")
+    print(f"  Loans:     {len(data['loans']):<8} Outstanding: ₹{total_loans:,.2f}")
+    print(f"  Time:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{Colors.CYAN}{'─'*44}{Colors.END}")
+
+def loan_management_menu(data):
+    """Loan Management Sub-Menu"""
+    while True:
+        print(f"\n{Colors.BOLD}{Colors.BLUE}=== LOAN MANAGEMENT ==={Colors.END}")
+        print("1. Apply for Loan")
+        print("2. Pay Loan EMI")
+        print("3. View Loan Details")
+        print("4. View All Loans")
+        print("5. Back to Main Menu")
+        
+        choice = input("\nSelect: ").strip()
+        
+        if choice == '1': data = apply_loan(data)
+        elif choice == '2': data = pay_loan_emi(data)
+        elif choice == '3': view_loan_details(data)
+        elif choice == '4':
+            if data['loans'].empty:
+                print("No loans found.")
+            else:
+                print(data['loans'][['LoanID', 'CustomerID', 'LoanType', 'PrincipalAmount', 'EMI', 'OutstandingAmount', 'Status']].to_string(index=False))
+        elif choice == '5': break
+        else: print("Invalid option.")
+        
+        save_data(data)
+    
+    return data
+
+# ==========================================
+# SECTION 9A: ADVANCED FEATURES
+# ==========================================
+
+def generate_account_statement(data):
+    """Generate detailed account statement"""
+    print(f"\n{Colors.CYAN}--- Account Statement ---{Colors.END}")
+    
+    acc_num = input("Account Number: ").strip()
+    account = data['accounts'][data['accounts']['AccountNumber'] == acc_num]
+    
+    if account.empty:
+        print(f"{Colors.RED}Account not found{Colors.END}")
+        return
+    
+    acc = account.iloc[0]
+    customer_id = acc['CustomerID']
+    customer = data['customers'][data['customers']['CustomerID'] == customer_id]
+    
+    print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*60}")
+    print(f"{'COREBANK ACCOUNT STATEMENT':^60}")
+    print(f"{'='*60}{Colors.END}\n")
+    
+    print(f"Account Holder: {customer.iloc[0]['Name']}")
+    print(f"Account Number: {acc_num}")
+    print(f"Account Type: {acc['AccountType']}")
+    print(f"Statement Date: {get_date()}")
+    print(f"\n{Colors.CYAN}Account Summary:{Colors.END}")
+    print(f"  Opening Balance: ₹{acc['Balance']:,.2f}")
+    print(f"  Current Balance: ₹{acc['Balance']:,.2f}")
+    print(f"  Interest Rate: {acc['InterestRate']:.2f}%")
+    print(f"  Minimum Balance: ₹{acc['MinBalance']:,.2f}")
+    print(f"  Status: {acc['Status']}")
+    
+    # Get last 10 transactions
+    trans = data['transactions'][data['transactions']['AccountNumber'] == acc_num]
+    if not trans.empty:
+        trans_sorted = trans.sort_values('Date', ascending=False).head(10)
+        print(f"\n{Colors.CYAN}Recent Transactions (Last 10):{Colors.END}")
+        print(f"{'-'*60}")
+        for idx, t in trans_sorted.iterrows():
+            symbol = "+" if t['TransactionType'] == 'Deposit' else "-"
+            print(f"{t['Date']:12} {t['TransactionType']:10} {symbol}₹{abs(t['Amount']):10,.2f} Balance: ₹{t['BalanceAfter']:,.2f}")
+        print(f"{'-'*60}\n")
+    else:
+        print(f"\n{Colors.YELLOW}No transactions found{Colors.END}\n")
+
+def calculate_account_interest(data):
+    """Calculate interest accrued on accounts"""
+    print(f"\n{Colors.CYAN}--- Interest Calculator ---{Colors.END}")
+    
+    acc_num = input("Account Number: ").strip()
+    account = data['accounts'][data['accounts']['AccountNumber'] == acc_num]
+    
+    if account.empty:
+        print(f"{Colors.RED}Account not found{Colors.END}")
+        return
+    
+    acc = account.iloc[0]
+    months = int(input("Number of months to calculate: "))
+    
+    balance = acc['Balance']
+    rate = acc['InterestRate']
+    
+    # Simple interest
+    simple_interest = (balance * rate * months) / (100 * 12)
+    
+    # Compound interest (quarterly)
+    compound_interest = balance * ((1 + rate/(100*4))**(months/3) - 1)
+    
+    final_balance_simple = balance + simple_interest
+    final_balance_compound = balance + compound_interest
+    
+    print(f"\n{Colors.BOLD}{Colors.BLUE}Interest Calculation{Colors.END}")
+    print(f"Current Balance: ₹{balance:,.2f}")
+    print(f"Annual Interest Rate: {rate:.2f}%")
+    print(f"Period: {months} months")
+    print(f"\n{Colors.CYAN}Results:{Colors.END}")
+    print(f"  Simple Interest: ₹{simple_interest:,.2f}")
+    print(f"  Final Balance (Simple): ₹{final_balance_simple:,.2f}")
+    print(f"\n  Compound Interest: ₹{compound_interest:,.2f}")
+    print(f"  Final Balance (Compound): ₹{final_balance_compound:,.2f}")
+
+def view_customer_financial_dashboard(data):
+    """Comprehensive customer financial dashboard"""
+    print(f"\n{Colors.CYAN}--- Customer Financial Dashboard ---{Colors.END}")
+    
+    cust_id = input("Customer ID: ").strip()
+    customer = data['customers'][data['customers']['CustomerID'] == cust_id]
+    
+    if customer.empty:
+        print(f"{Colors.RED}Customer not found{Colors.END}")
+        return
+    
+    cust = customer.iloc[0]
+    
+    # Get all accounts
+    accounts = data['accounts'][data['accounts']['CustomerID'] == cust_id]
+    total_balance = accounts['Balance'].sum() if not accounts.empty else 0
+    
+    # Get all loans
+    loans = data['loans'][data['loans']['CustomerID'] == cust_id]
+    total_loans = loans['OutstandingAmount'].sum() if not loans.empty else 0
+    
+    # Get all cards
+    cards = data['cards'][data['cards']['CustomerID'] == cust_id]
+    
+    # Get transactions count
+    account_nums = accounts['AccountNumber'].tolist() if not accounts.empty else []
+    trans = data['transactions'][data['transactions']['AccountNumber'].isin(account_nums)]
+    
+    print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*60}")
+    print(f"{'FINANCIAL DASHBOARD':^60}")
+    print(f"{'='*60}{Colors.END}\n")
+    
+    print(f"Customer Name: {cust['Name']}")
+    print(f"Customer ID: {cust_id}")
+    print(f"Email: {cust['Email']}")
+    print(f"Phone: {cust['Phone']}")
+    
+    print(f"\n{Colors.CYAN}Portfolio Overview:{Colors.END}")
+    print(f"  Total Accounts: {len(accounts)}")
+    print(f"  Total Balance: ₹{total_balance:,.2f}")
+    print(f"  Total Loans: {len(loans)}")
+    print(f"  Total Outstanding: ₹{total_loans:,.2f}")
+    print(f"  Cards Issued: {len(cards)}")
+    print(f"  Total Transactions: {len(trans)}")
+    
+    net_worth = total_balance - total_loans
+    print(f"\n{Colors.CYAN}Net Worth:{Colors.END}")
+    print(f"  Assets (Balance): ₹{total_balance:,.2f}")
+    print(f"  Liabilities (Loans): ₹{total_loans:,.2f}")
+    print(f"  Net Position: ₹{net_worth:,.2f}")
+    
+    if total_loans > 0:
+        loan_ratio = (total_loans / (total_balance + total_loans)) * 100
+        print(f"  Debt-to-Assets Ratio: {loan_ratio:.2f}%")
+    
+    # Account breakdown
+    if not accounts.empty:
+        print(f"\n{Colors.CYAN}Account Breakdown:{Colors.END}")
+        for idx, acc in accounts.iterrows():
+            status_color = Colors.GREEN if acc['Status'] == 'Active' else Colors.RED
+            print(f"  {status_color}{acc['AccountNumber']:10} {acc['AccountType']:10} ₹{acc['Balance']:>12,.2f} {acc['Status']}{Colors.END}")
+    
+    # Credit score
+    credit_score = calculate_credit_score(total_balance, len(loans), len(trans))
+    print(f"\n{Colors.CYAN}Credit Score: {Colors.BOLD}{credit_score}{Colors.END}")
+    if credit_score >= 750:
+        rating = "Excellent"
+    elif credit_score >= 650:
+        rating = "Good"
+    elif credit_score >= 550:
+        rating = "Fair"
+    else:
+        rating = "Poor"
+    print(f"Rating: {rating}")
+
+def compare_loan_offers(data):
+    """Compare different loan types and EMI"""
+    print(f"\n{Colors.CYAN}--- Loan Comparison Tool ---{Colors.END}")
+    
+    amount = float(input("Loan Amount (₹): ").strip())
+    tenure = int(input("Tenure (months): ").strip())
+    
+    print(f"\n{Colors.BOLD}{Colors.BLUE}Loan Comparison:{Colors.END}")
+    print(f"Amount: ₹{amount:,.2f}")
+    print(f"Tenure: {tenure} months ({tenure/12:.1f} years)\n")
+    
+    loan_types = {
+        'Home Loan': 8.5,
+        'Personal Loan': 12.0,
+        'Car Loan': 9.5,
+        'Education Loan': 7.5,
+        'Business Loan': 11.0
+    }
+    
+    print(f"{'Loan Type':<20} {'Interest':<12} {'Monthly EMI':<15} {'Total Amount':<15} {'Total Interest':<15}")
+    print(f"{'-'*77}")
+    
+    for loan_type, rate in loan_types.items():
+        emi = calculate_emi(amount, rate, tenure)
+        total = emi * tenure
+        interest = total - amount
+        print(f"{loan_type:<20} {rate:>6.2f}% {emi:>14,.2f} {total:>14,.2f} {interest:>14,.2f}")
+
+# ==========================================
+# SECTION 9B: MENUS & MAIN LOOP
+# ==========================================
 
 def main():
     initialize_data()
     data = load_data()
     
-    print(f"\n{Colors.BOLD}{Colors.GREEN}Welcome to CoreBank System (Single File Edition){Colors.END}")
+    print(f"\n{Colors.BOLD}{Colors.GREEN}")
+    print("╔═══════════════════════════════════════════════════════════╗")
+    print("║  Welcome to CoreBank System v4.0 - Ultimate Edition      ║")
+    print("║  A Comprehensive Banking Management Solution             ║")
+    print("╚═══════════════════════════════════════════════════════════╝")
+    print(f"{Colors.END}")
     
     while True:
         dashboard(data)
-        print("\n1. Add Customer")
-        print("2. Open Account")
-        print("3. Deposit")
-        print("4. Withdraw")
-        print("5. Check Balance")
-        print("6. Apply Loan")
-        print("7. View Customers")
-        print("8. Reports & Analytics")
-        print("9. Backup Data")
-        print("10. Exit")
+        print(f"\n{Colors.YELLOW}═══ MAIN MENU ═══{Colors.END}")
+        print(f"\n{Colors.CYAN}Customer & Account:{Colors.END}")
+        print("  1.  Add Customer")
+        print("  2.  View Customers")
+        print("  3.  Open Account")
+        print("  4.  Check Balance")
+        print(f"\n{Colors.CYAN}Transactions:{Colors.END}")
+        print("  5.  Deposit Money")
+        print("  6.  Withdraw Money")
+        print("  7.  Fund Transfer")
+        print(f"\n{Colors.CYAN}Loan Management:{Colors.END}")
+        print("  8.  Loan Menu")
+        print(f"\n{Colors.CYAN}Card & Cheque:{Colors.END}")
+        print("  9.  Card Management")
+        print("  10. Cheque Processing")
+        print(f"\n{Colors.CYAN}Advanced Features:{Colors.END}")
+        print("  11. Account Statement")
+        print("  12. Interest Calculator")
+        print("  13. Financial Dashboard")
+        print("  14. Compare Loan Offers")
+        print(f"\n{Colors.CYAN}Reports & Utilities:{Colors.END}")
+        print("  15. Reports & Analytics")
+        print("  16. Backup Data")
+        print("  17. Search Customer")
+        print(f"\n  18. Exit")
         
-        choice = input("\nSelect Option: ").strip()
+        choice = input(f"\n{Colors.BOLD}Select Option: {Colors.END}").strip()
         
         if choice == '1': data = add_customer(data)
-        elif choice == '2': data = open_account(data)
-        elif choice == '3': data = deposit_money(data)
-        elif choice == '4': data = withdraw_money(data)
-        elif choice == '5': check_balance(data)
-        elif choice == '6': data = apply_loan(data)
-        elif choice == '7': view_customers(data)
-        elif choice == '8': generate_reports(data)
-        elif choice == '9': backup_data()
-        elif choice == '10': 
+        elif choice == '2': view_customers(data)
+        elif choice == '3': data = open_account(data)
+        elif choice == '4': check_balance(data)
+        elif choice == '5': data = deposit_money(data)
+        elif choice == '6': data = withdraw_money(data)
+        elif choice == '7': data = transfer_funds(data)
+        elif choice == '8': data = loan_management_menu(data)
+        elif choice == '9': data = card_management_menu(data)
+        elif choice == '10': data = cheque_management_menu(data)
+        elif choice == '11': generate_account_statement(data)
+        elif choice == '12': calculate_account_interest(data)
+        elif choice == '13': view_customer_financial_dashboard(data)
+        elif choice == '14': compare_loan_offers(data)
+        elif choice == '15': generate_reports(data)
+        elif choice == '16': backup_data()
+        elif choice == '17': search_customer(data)
+        elif choice == '18': 
             save_data(data)
-            print("Goodbye!")
+            print(f"\n{Colors.GREEN}Thank you for using CoreBank. Goodbye!{Colors.END}")
             break
         else:
-            print("Invalid option.")
+            print(f"{Colors.RED}Invalid option. Please try again.{Colors.END}")
             
         save_data(data)
 

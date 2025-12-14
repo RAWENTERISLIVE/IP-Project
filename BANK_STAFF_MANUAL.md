@@ -1,103 +1,89 @@
-# CoreBank System - Bank Staff User Manual
+# 📘 CoreBank System - Bank Staff Operations Manual
 
-## System Overview
-
-**CoreBank** is a comprehensive bank management system designed to streamline daily banking operations. It supports customer management, account operations, transaction processing, and loan management.
+## Version 4.0 - Ultimate Edition
 
 ---
 
-## Getting Started
+## 🏦 System Overview
+
+**CoreBank** is a comprehensive bank management system with:
+- ✅ Customer & Account Management
+- ✅ Fund Transfers
+- ✅ Card Management (Debit/Credit/Premium)
+- ✅ Cheque Processing
+- ✅ Loan Management (5 Types + EMI)
+- ✅ Visual Analytics & Reports
+- ✅ Complete Audit Logging
+
+---
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
 - Python 3.6 or higher
-- Required libraries: pandas, matplotlib, numpy
+- Required libraries: `pandas`, `matplotlib`
 
 ### Installation
 
-1. Install Python libraries:
 ```bash
-pip install pandas matplotlib numpy
-```
+# Install dependencies
+pip install pandas matplotlib
 
-2. Navigate to the project directory:
-```bash
-cd /path/to/IP\ Project
-```
-
-3. Run the application:
-```bash
+# Run the application
 python bank_management_system.py
 ```
 
-### Default Credentials
-
-- **Username**: admin
-- **Password**: admin@123
-
----
-
-## System Architecture
-
-The system is implemented as a **Single Python File** for easy deployment:
+### System Architecture
 
 ```
 CoreBank/
-├── bank_management_system.py    (Main application - contains all logic)
-└── bank_database.csv            (Single database file - stores all records)
+├── bank_management_system.py    (Main app - ~1700 lines)
+└── bank_database.csv            (JSON-in-CSV database)
 ```
-
-All data (customers, accounts, transactions, etc.) is stored in the single `bank_database.csv` file.
-
 
 ---
 
-## Module Descriptions
+## 📋 Complete Menu Reference
+
+### Main Menu (14 Options)
+
+| # | Option | Description |
+|---|--------|-------------|
+| 1 | Add Customer | Register new customer with KYC |
+| 2 | View Customers | List all customers |
+| 3 | Open Account | Open Savings/Current/FD account |
+| 4 | Check Balance | View account balance |
+| 5 | Deposit Money | Cash deposit |
+| 6 | Withdraw Money | Cash withdrawal |
+| 7 | **Fund Transfer** | Transfer between accounts |
+| 8 | **Loan Menu** | Apply, pay EMI, view loans |
+| 9 | **Card Management** | Issue, activate, block cards |
+| 10 | **Cheque Processing** | Issue, clear, view cheques |
+| 11 | Reports & Analytics | Visual charts & reports |
+| 12 | Backup Data | Create timestamped backup |
+| 13 | Search Customer | Find customer by name/ID |
+| 14 | Exit | Save and exit |
+
+---
+
+## 📚 Module Operations
 
 ### 1. Customer Management
 
-**Purpose**: Register and manage customer information with full KYC (Know Your Customer) details.
+**Purpose**: Register and manage customer KYC details.
 
-**Features**:
-- Add new customers with complete details
-- Search customers by ID or name
-- Update customer contact information
-- View all registered customers
-- Delete customers (with validation)
+**Add Customer Steps**:
+1. Main Menu → Option 1
+2. Enter: Name, DOB (YYYY-MM-DD), Gender
+3. Enter: PAN (ABCDE1234F), Aadhar (12 digits)
+4. Enter: Address, City, State, PIN, Phone, Email
+5. System generates Customer ID (CUST001)
 
-**Data Captured**:
-- Personal: Name, DOB, Gender
-- Identification: PAN, Aadhar
-- Contact: Address, City, State, PIN, Phone, Email
-- Account Status: Active/Inactive, KYC Status
-
-**Step-by-Step Guide**:
-
-#### Adding a Customer
-1. From Main Menu, select **Option 1: Customer Management**
-2. Select **Option 1: Add Customer**
-3. Enter the following information:
-   - Name (e.g., "Raghav Agarwal")
-   - Date of Birth (format: YYYY-MM-DD, e.g., "2005-08-15")
-   - Gender (Male/Female/Other)
-   - PAN number (format: ABCDE1234F)
-   - Aadhar number (12 digits)
-   - Complete address
-   - City, State, PIN (6 digits)
-   - Phone (10 digits)
-   - Email
-
-4. System auto-generates **Customer ID** (e.g., CUST001)
-5. Customer is set to "Active" with "Pending" KYC status
-
-#### Searching Customers
-1. From Customer Management menu, select **Option 3: Search Customer**
-2. Enter Customer ID or Name
-3. System displays matching customers with summary details
-
-#### Updating Customer Details
-1. From Customer Management menu, select **Option 4: Update Customer**
-2. Enter Customer ID to update
+**Search Customer**:
+1. Main Menu → Option 13
+2. Enter name or ID
+3. View matching results
 3. Press Enter to skip fields you don't want to change
 4. Updated details are saved immediately
 

@@ -1,49 +1,59 @@
-# CoreBank System - Technical Documentation
+# CoreBank System - Technical Documentation v4.0
 
-## System Architecture
+## 🏗️ System Architecture
 
-CoreBank is a modular, Python-based banking system designed for high school level implementation.
+CoreBank is a **single-file**, Python-based banking system with comprehensive features.
 
 ### Technology Stack
-- **Language**: Python 3.6+
-- **Data Storage**: CSV files with Pandas
-- **Visualization**: Matplotlib
-- **Calculations**: NumPy, custom algorithms
-- **Security**: SHA256 hashing (password/PIN)
+| Component | Technology |
+|-----------|------------|
+| **Language** | Python 3.6+ |
+| **Data Storage** | Single CSV with JSON |
+| **Visualization** | Matplotlib (Pie, Bar, Line) |
+| **Calculations** | EMI, Amortization, Credit Score |
+| **Security** | SHA-256 Hashing |
+| **Audit** | Complete transaction logging |
 
 ---
 
-## File Structure
+## 📁 File Structure
 
 ```
 /Users/raghav/Developer/IP Project/
-├── bank_management_system.py       # Main application (Single File - 1500+ lines)
-├── bank_database.csv               # Single Database File (Stores all tables)
-├── backups/                        # Timestamped backups
+├── bank_management_system.py    # Main Application (~1700+ lines)
+├── bank_database.csv            # Single Database (JSON-in-CSV format)
+├── backups/                     # Timestamped backups
 │   └── bank_database_YYYYMMDD_HHMMSS.csv
-├── bank_implementation_plan.md     # Project specifications
-├── BANK_STAFF_MANUAL.md           # Staff user manual
-├── CUSTOMER_GUIDE.md              # Customer guide
-├── TECHNICAL.md                   # This file
-├── task.md                        # Project tracking
-└── project_options.md             # Original options analysis
+├── README.md                    # Quick start guide
+├── TECHNICAL.md                 # This file
+├── BANK_STAFF_MANUAL.md        # Staff operations guide
+├── CUSTOMER_GUIDE.md           # Customer user guide
+├── PROJECT_SUMMARY.md          # Project overview
+├── task.md                      # Project tracking
+└── Updates todo.md              # Feature checklist
 ```
 
 ---
 
-## Core Modules (Internal)
+## 🧩 Internal Modules (9 Sections)
 
-The system is implemented as a single file with internal modules:
+The single file is organized into 9 logical sections:
 
-1. **Configuration**: Constants and settings
-2. **Validators**: Input validation functions
-3. **Security**: Hashing and masking utilities
-4. **Calculators**: Financial algorithms
-5. **Data Persistence**: Single CSV management
-6. **Core Logic**: Banking operations
+| Section | Purpose | Key Functions |
+|---------|---------|---------------|
+| **1. Config** | Constants, rates, limits | `Colors`, `LOAN_RATES`, `CARD_TYPES` |
+| **2. Utilities** | Calculators, validators | `calculate_emi()`, `calculate_credit_score()` |
+| **3. Data Layer** | CSV/JSON management | `load_data()`, `save_data()`, `backup_data()` |
+| **4. Core Banking** | Customer, Account, Transaction | `add_customer()`, `deposit_money()` |
+| **5. Fund Transfer** | Account transfers | `transfer_funds()` |
+| **6. Card Management** | Debit/Credit cards | `issue_card()`, `block_card()` |
+| **7. Cheque Processing** | Cheque lifecycle | `issue_cheque()`, `clear_cheque()` |
+| **8. Reports & Analytics** | Visual reports | `visualize_monthly_trends()` |
+| **9. Main Loop** | Menu system | `main()`, `dashboard()` |
 
+---
 
-**Purpose**: Centralized configuration and constants
+## 🔧 Configuration Constants
 
 **Key Elements**:
 ```python
