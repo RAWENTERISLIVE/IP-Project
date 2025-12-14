@@ -43,7 +43,7 @@ pip install pandas matplotlib
 cd "/path/to/IP Project"
 
 # Run the application
-python bank_management_system.py
+python3 bank_management_system.py
 ```
 
 ### 2. Main Menu Overview

@@ -262,6 +262,22 @@ def get_credit_score(account_age_days, total_transactions, total_balance, defaul
     final_score = base_score + age_score + txn_score + balance_score - default_penalty
     return max(300, min(900, final_score))
 
+def calculate_credit_score(total_balance, num_loans, num_transactions):
+    """Simplified credit score calculation for dashboard"""
+    base_score = 600
+    
+    # Balance bonus (max 150 points)
+    balance_score = min(150, int(total_balance / 10000) * 5)
+    
+    # Transaction activity bonus (max 100 points)
+    txn_score = min(100, num_transactions * 3)
+    
+    # Loan factor (having loans can be positive if managed well)
+    loan_score = min(50, num_loans * 10)
+    
+    final_score = base_score + balance_score + txn_score + loan_score
+    return max(300, min(900, final_score))
+
 def log_audit(data, action, details, status='Success'):
     """Log an action to audit trail"""
     log_entry = {
@@ -318,38 +334,100 @@ def load_data():
             table_rows = df[df['Table'] == table]['Data']
             
             if not table_rows.empty:
-                # Parse JSON records
-                records = [json.loads(row) for row in table_rows]
-                data[table] = pd.DataFrame(records)
-                # Ensure all columns exist (handle schema evolution)
-                for col in columns:
-                    if col not in data[table].columns:
-                        data[table][col] = None
+                # Parse JSON records (indexed dictionary format)
+                json_str = table_rows.iloc[0]
+                indexed_dict = json.loads(json_str)
+                
+                # Extract records - skip 'Table' and 'Data' keys and null values
+                records = []
+                for key, value in indexed_dict.items():
+                    # Skip non-dict values and skip if value is None or empty
+                    if isinstance(value, dict) and value and key not in ['Table', 'Data']:
+                        records.append(value)
+                
+                if records:
+                    data[table] = pd.DataFrame(records)
+                    # Ensure all columns exist (handle schema evolution)
+                    for col in columns:
+                        if col not in data[table].columns:
+                            data[table][col] = None
+                else:
+                    # Create empty DataFrame with correct schema
+                    data[table] = pd.DataFrame(columns=columns)
             else:
                 # Create empty DataFrame with correct schema
                 data[table] = pd.DataFrame(columns=columns)
-                
+        
+        # Fix data integrity issues
+        data = fix_data_integrity(data)
         return data
     except Exception as e:
         print(f"{Colors.RED}Error loading data: {str(e)}{Colors.END}")
         # Return empty structure on error to prevent crash
         return {table: pd.DataFrame(columns=cols) for table, cols in SCHEMAS.items()}
 
+def fix_data_integrity(data):
+    """Fix common data integrity issues in loaded data"""
+    # Fix transactions - ensure DebitCredit and Balance columns are populated
+    if not data['transactions'].empty:
+        # Fix missing DebitCredit based on TransactionType
+        debit_types = ['Withdrawal', 'Transfer Debit', 'Cheque Debit', 'Fund Transfer', 'EMI Payment']
+        credit_types = ['Deposit', 'Transfer Credit', 'Cheque Credit', 'Account Opening', 'Interest Credit']
+        
+        for idx, row in data['transactions'].iterrows():
+            txn_type = str(row.get('TransactionType', ''))
+            
+            # Fix DebitCredit if missing
+            if pd.isna(row.get('DebitCredit')) or row.get('DebitCredit') is None:
+                if any(dt in txn_type for dt in debit_types):
+                    data['transactions'].at[idx, 'DebitCredit'] = 'Debit'
+                elif any(ct in txn_type for ct in credit_types):
+                    data['transactions'].at[idx, 'DebitCredit'] = 'Credit'
+                else:
+                    data['transactions'].at[idx, 'DebitCredit'] = 'N/A'
+            
+            # Fix Balance_After if missing (use BalanceAfter if available)
+            if pd.isna(row.get('Balance_After')) or row.get('Balance_After') is None:
+                balance_after = row.get('BalanceAfter')
+                if pd.notna(balance_after):
+                    data['transactions'].at[idx, 'Balance_After'] = balance_after
+    
+    # Fix cards - ensure LinkedAccount is populated
+    if not data['cards'].empty and 'LinkedAccount' in data['cards'].columns:
+        for idx, row in data['cards'].iterrows():
+            if pd.isna(row.get('LinkedAccount')) or row.get('LinkedAccount') is None:
+                # Try to get from AccountNumber column
+                acc_num = row.get('AccountNumber')
+                if pd.notna(acc_num):
+                    data['cards'].at[idx, 'LinkedAccount'] = acc_num
+    
+    return data
+
 def save_data(data_dict):
-    """Save dictionary of DataFrames to single CSV"""
+    """Save dictionary of DataFrames to single CSV (JSON-in-CSV format)"""
     try:
         all_rows = []
         for table, df in data_dict.items():
             if not df.empty:
-                # Convert to dict records
+                # Convert DataFrame to list of records
                 records = df.to_dict(orient='records')
-                for record in records:
-                    # Clean NaN values
-                    clean_record = {k: (None if pd.isna(v) else v) for k, v in record.items()}
-                    all_rows.append({
-                        'Table': table,
-                        'Data': json.dumps(clean_record)
-                    })
+                # Create indexed dictionary format
+                indexed_dict = {str(i): record for i, record in enumerate(records)}
+                # Add null columns for schema evolution
+                indexed_dict['Table'] = None
+                indexed_dict['Data'] = None
+                # Convert to JSON and save as one row per table
+                json_data = json.dumps(indexed_dict)
+                all_rows.append({
+                    'Table': table,
+                    'Data': json_data
+                })
+            else:
+                # Save empty table
+                all_rows.append({
+                    'Table': table,
+                    'Data': json.dumps({})
+                })
         
         pd.DataFrame(all_rows).to_csv(DB_FILE, index=False)
         return True
@@ -677,22 +755,56 @@ def view_loan_details(data):
         return
     
     row = loan.iloc[0]
+    
+    # Handle different column names for tenure
+    tenure = row.get('Tenure_Months') or row.get('Tenure') or 'N/A'
+    if pd.isna(tenure):
+        tenure = 'N/A'
+    
+    principal = float(row.get('PrincipalAmount', 0) or 0)
+    interest_rate = float(row.get('InterestRate', 0) or 0)
+    emi = float(row.get('EMI', 0) or 0)
+    outstanding = float(row.get('OutstandingAmount', 0) or 0)
+    
     print(f"\n{'='*50}")
     print(f"Loan ID:        {row['LoanID']}")
-    print(f"Type:           {row['LoanType']}")
-    print(f"Principal:      ₹{row['PrincipalAmount']:,.2f}")
-    print(f"Interest Rate:  {row['InterestRate']}% p.a.")
-    print(f"Tenure:         {row['Tenure_Months']} months")
-    print(f"EMI:            ₹{row['EMI']:,.2f}")
-    print(f"Outstanding:    ₹{row['OutstandingAmount']:,.2f}")
-    print(f"Status:         {row['Status']}")
+    print(f"Type:           {row.get('LoanType', 'N/A')}")
+    print(f"Principal:      ₹{principal:,.2f}")
+    print(f"Interest Rate:  {interest_rate}% p.a.")
+    print(f"Tenure:         {tenure} months")
+    print(f"EMI:            ₹{emi:,.2f}")
+    print(f"Outstanding:    ₹{outstanding:,.2f}")
+    print(f"Status:         {row.get('Status', 'N/A')}")
+    
+    # Calculate repayment progress
+    if principal > 0:
+        repaid = principal - outstanding
+        progress = (repaid / principal) * 100
+        print(f"Repaid:         ₹{repaid:,.2f} ({progress:.1f}%)")
     print(f"{'='*50}")
     
     # Show payment history
     payments = data['loan_payments'][data['loan_payments']['LoanID'] == loan_id]
     if not payments.empty:
         print(f"\n{Colors.YELLOW}Payment History:{Colors.END}")
-        print(payments[['PaymentDate', 'AmountPaid', 'PrincipalPart', 'InterestPart']].to_string(index=False))
+        # Handle different column names
+        display_cols = []
+        for col in ['PaymentDate', 'Date', 'AmountPaid', 'Amount', 'PrincipalPart', 'InterestPart']:
+            if col in payments.columns:
+                display_cols.append(col)
+        if display_cols:
+            payment_display = payments[display_cols].copy()
+            # Format amount columns
+            for col in payment_display.columns:
+                if 'Amount' in col or 'Part' in col:
+                    payment_display[col] = payment_display[col].apply(
+                        lambda x: f"₹{float(x):,.2f}" if pd.notna(x) else 'N/A'
+                    )
+            print(payment_display.to_string(index=False))
+        else:
+            print("No payment details available.")
+    else:
+        print("\nNo payments recorded yet.")
 
 # ==========================================
 # SECTION 5: FUND TRANSFER SYSTEM
@@ -918,13 +1030,21 @@ def view_cards(data):
     
     print(f"\n{'='*70}")
     for _, card in cards.iterrows():
-        print(f"Card:    {mask_card_number(card['CardNumber'])}")
-        print(f"Type:    {card['CardType']}")
-        print(f"Account: {card['LinkedAccount']}")
-        print(f"Expiry:  {card['ExpiryDate']}")
-        print(f"Status:  {card['Status']}")
-        if card['CardType'] == 'Credit':
-            print(f"Limit:   ₹{card['CreditLimit']:,.2f}")
+        card_num = str(card.get('CardNumber', 'N/A'))
+        print(f"Card:    {mask_card_number(card_num)}")
+        print(f"Type:    {card.get('CardType', 'N/A')}")
+        # Handle both LinkedAccount and AccountNumber column names
+        linked_acc = card.get('LinkedAccount') or card.get('AccountNumber') or 'Not Linked'
+        if pd.isna(linked_acc) or linked_acc is None:
+            linked_acc = 'Not Linked'
+        print(f"Account: {linked_acc}")
+        print(f"Expiry:  {card.get('ExpiryDate', 'N/A')}")
+        print(f"Status:  {card.get('Status', 'N/A')}")
+        card_type = card.get('CardType', '')
+        if card_type == 'Credit' or 'Credit' in str(card_type):
+            credit_limit = card.get('CreditLimit', 0)
+            if pd.notna(credit_limit):
+                print(f"Limit:   ₹{float(credit_limit):,.2f}")
         print(f"{'-'*70}")
 
 def toggle_card_status(data):
@@ -1252,14 +1372,27 @@ def report_transaction_history(data):
         print("No transactions found for this account.")
         return
 
+    # Sort by date descending
+    txns = txns.sort_values('Date', ascending=False)
+    
     print(f"\nHistory for {acc_num}:")
-    print("-" * 80)
-    print(f"{'Date':<12} {'Type':<20} {'Amount':<12} {'Type':<8} {'Balance':<12}")
-    print("-" * 80)
+    print("-" * 85)
+    print(f"{'Date':<12} {'Type':<20} {'Amount':>12} {'Dr/Cr':<8} {'Balance':>15}")
+    print("-" * 85)
     
     for _, row in txns.iterrows():
-        print(f"{row['Date']:<12} {row['TransactionType']:<20} ₹{row['Amount']:<11.2f} {row['DebitCredit']:<8} ₹{row['Balance_After']:<12.2f}")
-    print("-" * 80)
+        # Handle None/NaN values safely
+        date_val = str(row.get('Date', 'N/A') or 'N/A')[:10]
+        txn_type = str(row.get('TransactionType', 'N/A') or 'N/A')[:18]
+        amount = float(row.get('Amount', 0) or 0)
+        debit_credit = str(row.get('DebitCredit', 'N/A') or 'N/A')
+        
+        # Get balance - check both column names
+        balance = row.get('Balance_After') or row.get('BalanceAfter') or 0
+        balance = float(balance) if pd.notna(balance) else 0
+        
+        print(f"{date_val:<12} {txn_type:<20} ₹{amount:>10,.2f} {debit_credit:<8} ₹{balance:>12,.2f}")
+    print("-" * 85)
 
 def report_bank_summary(data):
     print(f"\n{Colors.CYAN}--- Bank Financial Summary ---{Colors.END}")
@@ -1470,24 +1603,52 @@ def visualize_monthly_transactions(data):
     try:
         # Convert date and group by month
         txns = data['transactions'].copy()
-        txns['Month'] = pd.to_datetime(txns['Date']).dt.to_period('M').astype(str)
         
-        monthly = txns.groupby(['Month', 'DebitCredit'])['Amount'].sum().unstack(fill_value=0)
+        # Ensure Amount is numeric
+        if 'Amount' in txns.columns:
+            txns['Amount'] = pd.to_numeric(txns['Amount'], errors='coerce')
+        else:
+            print("No Amount column found in transactions.")
+            return
+        
+        # Parse dates - handle multiple date formats
+        if 'Date' in txns.columns:
+            txns['Date'] = pd.to_datetime(txns['Date'], errors='coerce')
+        else:
+            print("No Date column found in transactions.")
+            return
+        
+        # Remove rows with invalid dates or amounts
+        txns = txns.dropna(subset=['Date', 'Amount'])
+        
+        if txns.empty:
+            print("No valid transaction data to visualize.")
+            return
+        
+        # Extract month and sum by month
+        txns['Month'] = txns['Date'].dt.to_period('M')
+        monthly = txns.groupby('Month')['Amount'].sum().sort_index()
+        
+        if monthly.empty or len(monthly) == 0:
+            print("No data available for monthly trend chart.")
+            return
+        
+        # Convert period index to string for plotting
+        monthly.index = monthly.index.astype(str)
         
         plt.figure(figsize=(12, 6))
-        monthly.plot(kind='bar', width=0.8)
+        plt.plot(range(len(monthly)), monthly.values, marker='o', linewidth=2, markersize=8, color='#2E86AB')
         plt.title('Monthly Transaction Volume', fontsize=14, fontweight='bold')
         plt.xlabel('Month')
-        plt.ylabel('Amount (₹)')
-        plt.legend(['Credit', 'Debit'])
-        plt.xticks(rotation=45)
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.ylabel('Total Amount (₹)')
+        plt.xticks(range(len(monthly)), monthly.index, rotation=45)
+        plt.grid(True, linestyle='--', alpha=0.7)
         plt.tight_layout()
         
         print("Displaying chart window...")
         plt.show()
     except Exception as e:
-        print(f"{Colors.RED}Error generating chart: {e}{Colors.END}")
+        print(f"{Colors.RED}Error generating chart: {str(e)}{Colors.END}")
 
 def visualize_customer_growth(data):
     """Customer growth over time"""
@@ -1572,6 +1733,365 @@ def customer_credit_score(data):
     print(f"  Total Balance:     ₹{total_balance:,.2f}")
     print(f"  Loan Defaults:     {defaults}")
 
+# ==========================================
+# SECTION 8B: ADVANCED VISUALIZATIONS
+# ==========================================
+
+def visualize_balance_distribution(data):
+    """Visualize balance distribution across customers"""
+    print(f"\n{Colors.CYAN}--- Balance Distribution Analysis ---{Colors.END}")
+    
+    if data['accounts'].empty:
+        print("No account data to visualize.")
+        return
+    
+    try:
+        # Merge accounts with customer names
+        acc_cust = data['accounts'].merge(
+            data['customers'][['CustomerID', 'Name']], 
+            on='CustomerID', 
+            how='left'
+        )
+        
+        # Group by customer
+        cust_balances = acc_cust.groupby('Name')['Balance'].sum().sort_values(ascending=True)
+        
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        
+        # Horizontal bar chart
+        colors = plt.cm.viridis(range(0, 256, 256//len(cust_balances)))
+        axes[0].barh(cust_balances.index, cust_balances.values, color=colors)
+        axes[0].set_xlabel('Total Balance (₹)')
+        axes[0].set_title('Customer Balance Comparison', fontweight='bold')
+        axes[0].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x/1000:.0f}K'))
+        
+        # Balance ranges histogram
+        ranges = [0, 100000, 300000, 500000, 1000000, float('inf')]
+        labels = ['<₹1L', '₹1-3L', '₹3-5L', '₹5-10L', '>₹10L']
+        balance_counts = pd.cut(cust_balances, bins=ranges, labels=labels).value_counts()
+        axes[1].bar(balance_counts.index, balance_counts.values, color='#3498DB')
+        axes[1].set_xlabel('Balance Range')
+        axes[1].set_ylabel('Number of Customers')
+        axes[1].set_title('Balance Distribution', fontweight='bold')
+        
+        plt.tight_layout()
+        print("Displaying chart window...")
+        plt.show()
+    except Exception as e:
+        print(f"{Colors.RED}Error generating chart: {str(e)}{Colors.END}")
+
+def visualize_transaction_types(data):
+    """Visualize transaction types breakdown"""
+    print(f"\n{Colors.CYAN}--- Transaction Types Analysis ---{Colors.END}")
+    
+    if data['transactions'].empty:
+        print("No transaction data to visualize.")
+        return
+    
+    try:
+        # Group by transaction type
+        txn_types = data['transactions']['TransactionType'].value_counts()
+        
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        
+        # Pie chart of transaction count
+        colors = plt.cm.Set3(range(len(txn_types)))
+        axes[0].pie(txn_types.values, labels=txn_types.index, autopct='%1.1f%%', 
+                   colors=colors, startangle=90)
+        axes[0].set_title('Transaction Types by Count', fontweight='bold')
+        
+        # Bar chart of total amounts by type
+        txn_amounts = data['transactions'].groupby('TransactionType')['Amount'].sum().sort_values(ascending=False)
+        axes[1].bar(range(len(txn_amounts)), txn_amounts.values, color='#2ECC71')
+        axes[1].set_xticks(range(len(txn_amounts)))
+        axes[1].set_xticklabels(txn_amounts.index, rotation=45, ha='right')
+        axes[1].set_ylabel('Total Amount (₹)')
+        axes[1].set_title('Transaction Volume by Type', fontweight='bold')
+        axes[1].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x/100000:.1f}L'))
+        
+        plt.tight_layout()
+        print("Displaying chart window...")
+        plt.show()
+    except Exception as e:
+        print(f"{Colors.RED}Error generating chart: {str(e)}{Colors.END}")
+
+def visualize_loan_emi_analysis(data):
+    """Visualize loan EMI and outstanding analysis"""
+    print(f"\n{Colors.CYAN}--- Loan EMI Analysis ---{Colors.END}")
+    
+    if data['loans'].empty:
+        print("No loan data to visualize.")
+        return
+    
+    try:
+        loans = data['loans'].copy()
+        
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        
+        # 1. Loan Type Distribution (Pie)
+        loan_counts = loans['LoanType'].value_counts()
+        axes[0, 0].pie(loan_counts.values, labels=loan_counts.index, autopct='%1.1f%%',
+                      colors=plt.cm.Pastel1(range(len(loan_counts))))
+        axes[0, 0].set_title('Loan Type Distribution', fontweight='bold')
+        
+        # 2. Principal vs Outstanding (Grouped Bar)
+        loan_names = loans['LoanID'].tolist()
+        x = range(len(loan_names))
+        width = 0.35
+        principal = loans['PrincipalAmount'].astype(float).tolist()
+        outstanding = loans['OutstandingAmount'].astype(float).tolist()
+        
+        axes[0, 1].bar([i - width/2 for i in x], principal, width, label='Principal', color='#3498DB')
+        axes[0, 1].bar([i + width/2 for i in x], outstanding, width, label='Outstanding', color='#E74C3C')
+        axes[0, 1].set_xticks(x)
+        axes[0, 1].set_xticklabels(loan_names, rotation=45)
+        axes[0, 1].set_ylabel('Amount (₹)')
+        axes[0, 1].set_title('Principal vs Outstanding', fontweight='bold')
+        axes[0, 1].legend()
+        axes[0, 1].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x/100000:.1f}L'))
+        
+        # 3. EMI by Loan
+        emi_values = loans['EMI'].astype(float).tolist()
+        axes[1, 0].bar(loan_names, emi_values, color='#9B59B6')
+        axes[1, 0].set_ylabel('Monthly EMI (₹)')
+        axes[1, 0].set_title('Monthly EMI by Loan', fontweight='bold')
+        axes[1, 0].tick_params(axis='x', rotation=45)
+        
+        # 4. Repayment Progress
+        progress = [(p - o) / p * 100 if p > 0 else 0 
+                   for p, o in zip(principal, outstanding)]
+        colors = ['#27AE60' if p > 50 else '#F39C12' if p > 25 else '#E74C3C' for p in progress]
+        axes[1, 1].barh(loan_names, progress, color=colors)
+        axes[1, 1].set_xlabel('Repayment Progress (%)')
+        axes[1, 1].set_title('Loan Repayment Progress', fontweight='bold')
+        axes[1, 1].set_xlim(0, 100)
+        
+        plt.tight_layout()
+        print("Displaying chart window...")
+        plt.show()
+    except Exception as e:
+        print(f"{Colors.RED}Error generating chart: {str(e)}{Colors.END}")
+
+def visualize_daily_activity(data):
+    """Visualize daily transaction activity heatmap style"""
+    print(f"\n{Colors.CYAN}--- Daily Activity Analysis ---{Colors.END}")
+    
+    if data['transactions'].empty:
+        print("No transaction data to visualize.")
+        return
+    
+    try:
+        txns = data['transactions'].copy()
+        txns['Date'] = pd.to_datetime(txns['Date'], errors='coerce')
+        txns = txns.dropna(subset=['Date'])
+        
+        if txns.empty:
+            print("No valid date data to visualize.")
+            return
+        
+        # Group by date
+        daily = txns.groupby(txns['Date'].dt.date).agg({
+            'Amount': ['sum', 'count']
+        }).reset_index()
+        daily.columns = ['Date', 'TotalAmount', 'TxnCount']
+        daily = daily.sort_values('Date')
+        
+        fig, axes = plt.subplots(2, 1, figsize=(14, 8))
+        
+        # Transaction count by day
+        axes[0].fill_between(range(len(daily)), daily['TxnCount'], alpha=0.5, color='#3498DB')
+        axes[0].plot(range(len(daily)), daily['TxnCount'], color='#2980B9', linewidth=2)
+        axes[0].set_ylabel('Number of Transactions')
+        axes[0].set_title('Daily Transaction Count', fontweight='bold')
+        axes[0].set_xticks(range(0, len(daily), max(1, len(daily)//10)))
+        axes[0].set_xticklabels([str(d)[:10] for d in daily['Date'].iloc[::max(1, len(daily)//10)]], rotation=45)
+        
+        # Transaction volume by day
+        axes[1].bar(range(len(daily)), daily['TotalAmount'], color='#27AE60', alpha=0.7)
+        axes[1].set_ylabel('Total Volume (₹)')
+        axes[1].set_xlabel('Date')
+        axes[1].set_title('Daily Transaction Volume', fontweight='bold')
+        axes[1].set_xticks(range(0, len(daily), max(1, len(daily)//10)))
+        axes[1].set_xticklabels([str(d)[:10] for d in daily['Date'].iloc[::max(1, len(daily)//10)]], rotation=45)
+        axes[1].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x/1000:.0f}K'))
+        
+        plt.tight_layout()
+        print("Displaying chart window...")
+        plt.show()
+    except Exception as e:
+        print(f"{Colors.RED}Error generating chart: {str(e)}{Colors.END}")
+
+def visualize_comprehensive_dashboard(data):
+    """Generate a comprehensive visual dashboard"""
+    print(f"\n{Colors.CYAN}--- Comprehensive Analytics Dashboard ---{Colors.END}")
+    
+    try:
+        fig = plt.figure(figsize=(16, 12))
+        
+        # 1. Account Type Distribution (Top Left)
+        ax1 = fig.add_subplot(2, 3, 1)
+        if not data['accounts'].empty:
+            acc_types = data['accounts']['AccountType'].value_counts()
+            ax1.pie(acc_types.values, labels=acc_types.index, autopct='%1.1f%%',
+                   colors=['#3498DB', '#E74C3C', '#2ECC71', '#F39C12'])
+        ax1.set_title('Account Types', fontweight='bold')
+        
+        # 2. Customer Registration Timeline (Top Middle)
+        ax2 = fig.add_subplot(2, 3, 2)
+        if not data['customers'].empty:
+            cust = data['customers'].copy()
+            cust['RegDate'] = pd.to_datetime(cust['RegistrationDate'], errors='coerce')
+            cust = cust.dropna(subset=['RegDate']).sort_values('RegDate')
+            cust['CumCount'] = range(1, len(cust) + 1)
+            ax2.plot(cust['RegDate'], cust['CumCount'], marker='o', color='#9B59B6')
+            ax2.set_xlabel('Date')
+            ax2.set_ylabel('Total Customers')
+            ax2.tick_params(axis='x', rotation=45)
+        ax2.set_title('Customer Growth', fontweight='bold')
+        
+        # 3. Balance Summary (Top Right)
+        ax3 = fig.add_subplot(2, 3, 3)
+        total_balance = data['accounts']['Balance'].sum() if not data['accounts'].empty else 0
+        total_loans = data['loans']['OutstandingAmount'].sum() if not data['loans'].empty else 0
+        net_worth = total_balance - total_loans
+        categories = ['Total Deposits', 'Loan Outstanding', 'Net Position']
+        values = [total_balance, total_loans, net_worth]
+        colors = ['#27AE60', '#E74C3C', '#3498DB']
+        bars = ax3.bar(categories, values, color=colors)
+        ax3.set_ylabel('Amount (₹)')
+        ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x/100000:.1f}L'))
+        ax3.set_title('Financial Summary', fontweight='bold')
+        
+        # 4. Transaction Trend (Bottom Left)
+        ax4 = fig.add_subplot(2, 3, 4)
+        if not data['transactions'].empty:
+            txns = data['transactions'].copy()
+            txns['Date'] = pd.to_datetime(txns['Date'], errors='coerce')
+            txns['Amount'] = pd.to_numeric(txns['Amount'], errors='coerce')
+            txns = txns.dropna(subset=['Date', 'Amount'])
+            if not txns.empty:
+                txns['Month'] = txns['Date'].dt.to_period('M')
+                monthly = txns.groupby('Month')['Amount'].sum().sort_index()
+                monthly.index = monthly.index.astype(str)
+                ax4.bar(range(len(monthly)), monthly.values, color='#1ABC9C')
+                ax4.set_xticks(range(len(monthly)))
+                ax4.set_xticklabels(monthly.index, rotation=45)
+        ax4.set_xlabel('Month')
+        ax4.set_ylabel('Volume (₹)')
+        ax4.set_title('Monthly Transaction Volume', fontweight='bold')
+        
+        # 5. Loan Status (Bottom Middle)
+        ax5 = fig.add_subplot(2, 3, 5)
+        if not data['loans'].empty:
+            loan_status = data['loans']['Status'].value_counts()
+            colors_status = {'Active': '#27AE60', 'Closed': '#95A5A6', 'Defaulted': '#E74C3C'}
+            ax5.pie(loan_status.values, labels=loan_status.index, autopct='%1.1f%%',
+                   colors=[colors_status.get(s, '#3498DB') for s in loan_status.index])
+        ax5.set_title('Loan Status', fontweight='bold')
+        
+        # 6. Top Customers by Balance (Bottom Right)
+        ax6 = fig.add_subplot(2, 3, 6)
+        if not data['accounts'].empty:
+            cust_bal = data['accounts'].groupby('CustomerID')['Balance'].sum().nlargest(5)
+            cust_names = []
+            for cid in cust_bal.index:
+                cust = data['customers'][data['customers']['CustomerID'] == cid]
+                name = cust.iloc[0]['Name'].split()[0] if not cust.empty else cid
+                cust_names.append(name)
+            ax6.barh(cust_names, cust_bal.values, color='#F39C12')
+            ax6.set_xlabel('Balance (₹)')
+        ax6.set_title('Top 5 Customers', fontweight='bold')
+        
+        plt.suptitle('COREBANK ANALYTICS DASHBOARD', fontsize=16, fontweight='bold', y=1.02)
+        plt.tight_layout()
+        print("Displaying comprehensive dashboard...")
+        plt.show()
+    except Exception as e:
+        print(f"{Colors.RED}Error generating dashboard: {str(e)}{Colors.END}")
+
+def export_database_summary(data):
+    """Export a clean summary of the entire database"""
+    print(f"\n{Colors.CYAN}--- Database Summary Export ---{Colors.END}")
+    
+    print(f"\n{Colors.BOLD}╔{'═'*60}╗")
+    print(f"║{'COREBANK DATABASE SUMMARY':^60}║")
+    print(f"╚{'═'*60}╝{Colors.END}")
+    
+    print(f"\n{Colors.YELLOW}=== CUSTOMERS TABLE ==={Colors.END}")
+    print(f"Total Records: {len(data['customers'])}")
+    if not data['customers'].empty:
+        print(data['customers'][['CustomerID', 'Name', 'City', 'Phone', 'Status']].to_string(index=False))
+    
+    print(f"\n{Colors.YELLOW}=== ACCOUNTS TABLE ==={Colors.END}")
+    print(f"Total Records: {len(data['accounts'])}")
+    if not data['accounts'].empty:
+        acc_display = data['accounts'][['AccountNumber', 'CustomerID', 'AccountType', 'Balance', 'Status']].copy()
+        acc_display['Balance'] = acc_display['Balance'].apply(lambda x: f"₹{x:,.2f}")
+        print(acc_display.to_string(index=False))
+    
+    print(f"\n{Colors.YELLOW}=== TRANSACTIONS TABLE ==={Colors.END}")
+    print(f"Total Records: {len(data['transactions'])}")
+    if not data['transactions'].empty:
+        txn_display = data['transactions'][['TransactionID', 'AccountNumber', 'TransactionType', 'Amount', 'Date']].head(20).copy()
+        txn_display['Amount'] = txn_display['Amount'].apply(lambda x: f"₹{float(x):,.2f}" if pd.notna(x) else 'N/A')
+        print(txn_display.to_string(index=False))
+        if len(data['transactions']) > 20:
+            print(f"  ... and {len(data['transactions']) - 20} more records")
+    
+    print(f"\n{Colors.YELLOW}=== LOANS TABLE ==={Colors.END}")
+    print(f"Total Records: {len(data['loans'])}")
+    if not data['loans'].empty:
+        loan_display = data['loans'][['LoanID', 'CustomerID', 'LoanType', 'PrincipalAmount', 'EMI', 'OutstandingAmount', 'Status']].copy()
+        for col in ['PrincipalAmount', 'EMI', 'OutstandingAmount']:
+            loan_display[col] = loan_display[col].apply(lambda x: f"₹{float(x):,.2f}" if pd.notna(x) else 'N/A')
+        print(loan_display.to_string(index=False))
+    
+    print(f"\n{Colors.YELLOW}=== CARDS TABLE ==={Colors.END}")
+    print(f"Total Records: {len(data['cards'])}")
+    if not data['cards'].empty:
+        cards_display = data['cards'].copy()
+        # Safely get card number column
+        card_num_col = 'CardNumber' if 'CardNumber' in cards_display.columns else 'CardID'
+        if card_num_col in cards_display.columns:
+            cards_display['MaskedCard'] = cards_display[card_num_col].apply(lambda x: f"XXXX-{str(x)[-4:]}" if pd.notna(x) else 'N/A')
+        else:
+            cards_display['MaskedCard'] = 'N/A'
+        print(cards_display[['MaskedCard', 'CustomerID', 'CardType', 'Status']].to_string(index=False))
+    
+    print(f"\n{Colors.YELLOW}=== CHEQUES TABLE ==={Colors.END}")
+    print(f"Total Records: {len(data['cheques'])}")
+    if not data['cheques'].empty:
+        cheque_display = data['cheques'][['ChequeNumber', 'AccountNumber', 'IssuedTo', 'Amount', 'Status']].copy()
+        cheque_display['Amount'] = cheque_display['Amount'].apply(lambda x: f"₹{float(x):,.2f}" if pd.notna(x) else 'N/A')
+        print(cheque_display.to_string(index=False))
+    
+    print(f"\n{Colors.YELLOW}=== TRANSFERS TABLE ==={Colors.END}")
+    print(f"Total Records: {len(data['transfers'])}")
+    if not data['transfers'].empty:
+        transfer_display = data['transfers'][['TransferID', 'FromAccount', 'ToAccount', 'Amount', 'Date', 'Status']].copy()
+        transfer_display['Amount'] = transfer_display['Amount'].apply(lambda x: f"₹{float(x):,.2f}" if pd.notna(x) else 'N/A')
+        print(transfer_display.to_string(index=False))
+    
+    print(f"\n{Colors.YELLOW}=== AUDIT LOGS TABLE ==={Colors.END}")
+    print(f"Total Records: {len(data['audit'])}")
+    if not data['audit'].empty:
+        print(data['audit'][['LogID', 'Action', 'Timestamp', 'Status']].tail(10).to_string(index=False))
+        print(f"  (Showing last 10 entries)")
+    
+    print(f"\n{Colors.GREEN}{'═'*60}")
+    print(f"DATABASE STATISTICS")
+    print(f"{'═'*60}{Colors.END}")
+    print(f"  Total Customers:     {len(data['customers'])}")
+    print(f"  Total Accounts:      {len(data['accounts'])}")
+    print(f"  Total Transactions:  {len(data['transactions'])}")
+    print(f"  Total Loans:         {len(data['loans'])}")
+    print(f"  Total Cards:         {len(data['cards'])}")
+    print(f"  Total Cheques:       {len(data['cheques'])}")
+    print(f"  Total Transfers:     {len(data['transfers'])}")
+    print(f"  Total Audit Logs:    {len(data['audit'])}")
+    total_records = sum(len(data[t]) for t in data)
+    print(f"\n  {Colors.BOLD}GRAND TOTAL: {total_records} records{Colors.END}")
+
 def generate_reports(data):
     while True:
         print(f"\n{Colors.BOLD}{Colors.BLUE}=== REPORTS & ANALYTICS ==={Colors.END}")
@@ -1583,12 +2103,18 @@ def generate_reports(data):
         print("5.  Loan Portfolio Analysis")
         print("6.  View Audit Trail")
         print("7.  Customer Credit Score")
+        print("8.  Database Summary (All Tables)")
         print(f"\n{Colors.YELLOW}Visual Charts (Matplotlib):{Colors.END}")
-        print("8.  Account Distribution (Pie Chart)")
-        print("9.  Loan Portfolio (Bar Chart)")
-        print("10. Monthly Transaction Trend")
-        print("11. Customer Growth Chart")
-        print(f"\n12. Back to Main Menu")
+        print("9.  Account Distribution (Pie Chart)")
+        print("10. Loan Portfolio (Bar Chart)")
+        print("11. Monthly Transaction Trend")
+        print("12. Customer Growth Chart")
+        print("13. Balance Distribution Analysis")
+        print("14. Transaction Types Breakdown")
+        print("15. Loan EMI Analysis (4 Charts)")
+        print("16. Daily Activity Timeline")
+        print("17. Comprehensive Dashboard (6 Charts)")
+        print(f"\n18. Back to Main Menu")
         
         choice = input("\nSelect Report: ").strip()
         
@@ -1599,11 +2125,17 @@ def generate_reports(data):
         elif choice == '5': report_loan_portfolio(data)
         elif choice == '6': view_audit_trail(data)
         elif choice == '7': customer_credit_score(data)
-        elif choice == '8': visualize_account_distribution(data)
-        elif choice == '9': visualize_loan_status(data)
-        elif choice == '10': visualize_monthly_transactions(data)
-        elif choice == '11': visualize_customer_growth(data)
-        elif choice == '12': break
+        elif choice == '8': export_database_summary(data)
+        elif choice == '9': visualize_account_distribution(data)
+        elif choice == '10': visualize_loan_status(data)
+        elif choice == '11': visualize_monthly_transactions(data)
+        elif choice == '12': visualize_customer_growth(data)
+        elif choice == '13': visualize_balance_distribution(data)
+        elif choice == '14': visualize_transaction_types(data)
+        elif choice == '15': visualize_loan_emi_analysis(data)
+        elif choice == '16': visualize_daily_activity(data)
+        elif choice == '17': visualize_comprehensive_dashboard(data)
+        elif choice == '18': break
         else: print("Invalid option.")
 
 # ==========================================
@@ -1691,8 +2223,14 @@ def generate_account_statement(data):
         print(f"\n{Colors.CYAN}Recent Transactions (Last 10):{Colors.END}")
         print(f"{'-'*60}")
         for idx, t in trans_sorted.iterrows():
-            symbol = "+" if t['TransactionType'] == 'Deposit' else "-"
-            print(f"{t['Date']:12} {t['TransactionType']:10} {symbol}₹{abs(t['Amount']):10,.2f} Balance: ₹{t['BalanceAfter']:,.2f}")
+            txn_type = str(t.get('TransactionType', 'N/A') or 'N/A')
+            symbol = "+" if txn_type in ['Deposit', 'Credit', 'Cheque Credit', 'Transfer Credit'] else "-"
+            amount = float(t.get('Amount', 0) or 0)
+            # Handle both column naming conventions
+            balance = t.get('Balance_After') or t.get('BalanceAfter') or 0
+            balance = float(balance) if pd.notna(balance) else 0
+            date_str = str(t.get('Date', 'N/A') or 'N/A')[:10]
+            print(f"{date_str:12} {txn_type[:10]:10} {symbol}₹{abs(amount):>10,.2f} Balance: ₹{balance:>12,.2f}")
         print(f"{'-'*60}\n")
     else:
         print(f"\n{Colors.YELLOW}No transactions found{Colors.END}\n")
