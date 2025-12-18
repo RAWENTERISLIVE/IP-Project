@@ -1,0 +1,11 @@
+item_id,name,category,price,is_available
+1,Burger,Main Course,150.0,True
+2,Fries,Appetizer,80.0,True
+3,Coke,Beverage,40.0,True
+4,Chowmein,Starter,45.0,True
+5,Pizza,Main Course,250.0,True
+6,Pasta,Main Course,200.0,True
+7,Garlic Bread,Appetizer,90.0,True
+8,Ice Cream,Dessert,60.0,True
+9,Brownie,Dessert,80.0,True
+10,Lemonade,Beverage,50.0,True

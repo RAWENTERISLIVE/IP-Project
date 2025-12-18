@@ -1,0 +1,9 @@
+order_id,table_number,items,total_amount,status,timestamp
+1,1,"Burger, Fries, Coke",270.0,Completed,2025-12-18 10:00:00
+2,2,"Chowmein, Coke",85.0,Completed,2025-12-18 10:15:00
+3,3,"Burger, Burger",300.0,Pending,2025-12-18 10:30:00
+4,1,"Fries",80.0,Completed,2025-12-18 11:00:00
+5,4,"Pizza, Coke, Brownie",370.0,Completed,2025-12-18 12:00:00
+6,2,"Pasta, Garlic Bread",290.0,Completed,2025-12-18 12:30:00
+7,5,"Ice Cream",60.0,Completed,2025-12-18 13:00:00
+8,3,"Burger, Fries, Lemonade",280.0,Pending,2025-12-18 13:15:00
