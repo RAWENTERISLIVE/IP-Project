@@ -1,24 +1,3 @@
-"""
-CoreBank - Comprehensive Bank Management System
-Version: 4.0 (Ultimate Single File Edition)
-Author: Raghav Agarwal
-Date: December 14, 2025
-
-This is a complete Banking Management System implemented in a single Python file.
-It includes:
-1. Configuration & Constants
-2. Input Validators
-3. Security Utilities (Hashing/Masking)
-4. Financial Calculators (EMI, Interest, Amortization)
-5. Data Persistence (Single CSV Database)
-6. Core Banking Logic (Customers, Accounts, Transactions, Loans)
-7. Fund Transfer System (Internal & External)
-8. Card Management System (Debit/Credit Cards)
-9. Cheque Processing System
-10. Comprehensive Audit Trail
-11. Advanced Reports & Visual Analytics
-"""
-
 import os
 import sys
 import json
